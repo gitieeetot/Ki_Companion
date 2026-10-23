@@ -722,6 +722,15 @@ def ollama_api_ready(timeout=0.5):
         return False
 
 
+def local_agent_tool_status():
+    """Read local Ollama readiness and optional CLI availability without launching tools."""
+    return {
+        "Ollama local service": ollama_api_ready(timeout=0.35),
+        "Aider CLI on PATH": bool(shutil.which("aider")),
+        "OpenCode CLI on PATH": bool(shutil.which("opencode")),
+    }
+
+
 _OLLAMA_START_LOCK = threading.Lock()
 
 
@@ -2387,8 +2396,15 @@ class DashboardWindow(QDialog):
         search_hint.setObjectName("muted")
         search_layout.addWidget(search_hint)
         status_grid.addWidget(search_tile, 1, 1)
+        agents_tile = self.make_tile("Local agent tools", "Checking local tools…")
+        agents_tile.setToolTip("Read-only check of Ollama and optional local coding-agent launchers")
+        agents_tile.clicked.connect(self.show_agent_status)
+        self.agent_value = agents_tile.findChild(QLabel, "value")
+        self.agent_value.setWordWrap(True)
+        self.agent_value.setStyleSheet("font-size:15px;")
+        status_grid.addWidget(agents_tile, 2, 1)
         self.status_grid = status_grid
-        self.status_tiles = [battery_tile, task_tile, spotify_tile, snipping_tile, search_tile]
+        self.status_tiles = [battery_tile, task_tile, spotify_tile, snipping_tile, search_tile, agents_tile]
         content_layout.addLayout(status_grid)
 
         apps_header = QHBoxLayout()
@@ -2419,9 +2435,9 @@ class DashboardWindow(QDialog):
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(15000)
-        self.refresh_timer.timeout.connect(self.refresh_battery)
+        self.refresh_timer.timeout.connect(self.refresh_dashboard_status)
         self.refresh_timer.start()
-        self.refresh_battery()
+        self.refresh_dashboard_status()
         self.reflow_grids()
 
     def resizeEvent(self, event):
@@ -2488,6 +2504,40 @@ class DashboardWindow(QDialog):
         else:
             layout.addWidget(button)
         return tile
+
+    def refresh_dashboard_status(self):
+        self.refresh_battery()
+        self.refresh_agent_status()
+
+    def refresh_agent_status(self):
+        self._agent_tools = local_agent_tool_status()
+        local_ready = self._agent_tools["Ollama local service"]
+        available_agents = sum(
+            self._agent_tools[name]
+            for name in ("Aider CLI on PATH", "OpenCode CLI on PATH")
+        )
+        agent_summary = (
+            f"{available_agents}/2 local agent CLIs found"
+            if available_agents
+            else "No local agent tools found"
+        )
+        summary = f"{'Ollama online' if local_ready else 'Ollama offline'} · {agent_summary}"
+        self.agent_value.setText(summary)
+        rows = [
+            f"{name}: {'Available' if available else 'Not found on PATH'}"
+            for name, available in self._agent_tools.items()
+        ]
+        self._agent_details = (
+            "Local status only\n\n"
+            + "\n".join(rows)
+            + "\n\nKi checks Ollama on this computer and checks whether the Aider or OpenCode launcher is on PATH. "
+            "It does not start them, inspect their prompts or project files, or approve actions. "
+            "If you use either tool, select local Ollama in that tool to avoid paid or cloud models."
+        )
+
+    def show_agent_status(self):
+        self.refresh_agent_status()
+        QMessageBox.information(self, "Local agent tools", self._agent_details)
 
     def show_battery_status(self):
         self.refresh_battery()
