@@ -507,6 +507,19 @@ class RobotWidget(QWidget):
         self.open_dashboard()
         QTimer.singleShot(100, self.dashboard.open_audio_settings)
 
+    def handle_launch_hotkey(self):
+        """Wake Ki from the shortcut, or exit when its chat is already active."""
+        if QApplication.activeWindow() is self.chat and self.chat.isVisible() and not self.chat.isMinimized():
+            QApplication.quit()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.chat.showNormal()
+        self.chat.raise_()
+        self.chat.activateWindow()
+        self.react("excited", 1.4)
+
     def react(self, expression, duration=1.8):
         """Show a short, friendly expression in response to an app event."""
         self.expression = expression
@@ -3582,7 +3595,7 @@ def main():
         _KI_TOGGLE_EVENT = kernel32.CreateEventW(None, False, False, _KI_TOGGLE_EVENT_NAME)
         _KI_INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, _KI_MUTEX_NAME)
         if kernel32.GetLastError() == 183:
-            # A second launch from the desktop shortcut toggles the running Ki off.
+            # A second launch from the desktop shortcut wakes the existing Ki instance.
             event_handle = kernel32.OpenEventW(0x0002, False, _KI_TOGGLE_EVENT_NAME)
             if event_handle:
                 kernel32.SetEvent(event_handle)
@@ -3595,7 +3608,7 @@ def main():
         toggle_timer = QTimer(app)
         def check_toggle_request():
             if kernel32.WaitForSingleObject(_KI_TOGGLE_EVENT, 0) == 0:
-                app.quit()
+                robot.handle_launch_hotkey()
         toggle_timer.timeout.connect(check_toggle_request)
         toggle_timer.start(100)
     shortcut_filter = KiShortcutEventFilter(app)
