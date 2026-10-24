@@ -17,17 +17,17 @@ Audio capture stays off until you press **Talk**, hold **Ctrl + Alt + Space**, o
 
 Wake-word and clap detection are not implemented. Ambient listening is an explicit dashboard toggle: it stays off until you start it and shows a listening status while active.
 
-## Android companion (starter)
+## Android companion
 
-The native Android app is in `android/` (Android 8.0 or newer). It has a dark charcoal-and-cyan chat UI, a small animated Ki that wanders across the companion card, saved pairing details, connection checks that distinguish PC/firewall issues from Ollama/model setup, UTF-8 text attachments up to 512 KB, and a **Updates** screen that checks GitHub Releases, downloads the APK, verifies its package/version, and hands installation to Android for your confirmation. Update checks use public GitHub release data; the repository and Android releases must be public. It does not expose desktop controls, run commands, or save uploaded files on the PC.
+The native Android app is in `android/` (Android 8.0 or newer). It has a glass-card chat UI in Ki's charcoal-and-cyan colors, a small animated pet-like Ki robot, QR and manual PC pairing, saved connection details, connection checks that distinguish PC/firewall issues from Ollama/model setup, UTF-8 text attachments up to 512 KB, and an **Updates** screen that checks GitHub Releases, downloads the APK, verifies its package/version, and hands installation to Android for your confirmation. Update checks use public GitHub release data; the repository and Android releases must be public. It does not expose desktop controls, run commands, or save uploaded files on the PC.
 
-To pair, start Ki and open Dashboard → Device & activity → Phone companion. Enable phone access only when needed, then enter one of the displayed PC addresses and the pairing token in the Android app. If Windows asks about the firewall, allow Python on private networks only. The phone and PC must be on the same Wi-Fi/hotspot or a reachable USB-tethering network. USB file-transfer/MTP mode by itself is not a network connection.
+To pair, put both devices on the same Wi-Fi/hotspot or reachable USB-tethering network. In Ki, open Dashboard → Device & activity → Phone companion and enable phone access. In the Android app tap **Scan PC pairing QR**, then point the camera at the QR code in Ki's PC dialog. You can still enter the PC address and token manually. If Windows asks about the firewall, allow Python on private networks only. USB file-transfer/MTP mode by itself is not a network connection. The QR includes the local pairing token; only display and scan it on a trusted network.
 
-The bridge is disabled by default, accepts only authenticated chat/status requests, and stops when Ki exits. The connection currently uses unencrypted HTTP with a random pairing token; use it only on a trusted private network and disable it when finished. After Android app changes, rebuild and reinstall the APK: open `android/` in Android Studio with Android SDK Platform 35 and JDK 17, or run `android\gradlew.bat :app:assembleDebug` from the repository root. The first build downloads Gradle 8.10.2 through the included wrapper.
+The bridge is disabled by default, accepts only authenticated chat/status requests, and stops when Ki exits. The connection currently uses unencrypted HTTP with a random pairing token; use it only on a trusted private network and disable it when finished. After Android app changes, rebuild and reinstall the APK: open `android/` in Android Studio with Android SDK Platform 35 and JDK 17, or run `android\gradlew.bat -p android :app:assembleDebug` from the repository root. The first build downloads Gradle 8.10.2 through the included wrapper.
 
 ### Publishing Android updates on GitHub
 
-The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.1` is pushed. It publishes the file as `KiCompanion.apk`; the in-app updater looks for this asset on Android releases.
+The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.2` is pushed. It publishes the file as `KiCompanion.apk`; the in-app updater looks for this asset on Android releases.
 
 Before the first release, create a long-lived Android signing key and back it up securely. Never commit the keystore or its passwords:
 
@@ -39,8 +39,8 @@ Add these GitHub repository Actions secrets: `KI_RELEASE_KEYSTORE_BASE64` (the k
 
 Then push an Android version tag to start a release:
 
-    git tag android-v0.1.1
-    git push origin android-v0.1.1
+    git tag android-v0.1.2
+    git push origin android-v0.1.2
 
 The workflow assigns increasing Android `versionCode` values from the tag. Every future APK must be signed with the same keystore; losing it prevents Android from accepting app updates. The APK currently installed by copying the development/debug build is signed with a different key. Install the first GitHub-signed release as a fresh install (uninstalling the debug build removes its app data); after that, in-app updates can install over the app while preserving its data. A private GitHub repository cannot be checked by this public-release updater; do not embed a personal access token in the app.
 

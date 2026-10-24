@@ -293,6 +293,15 @@ class PhoneCompanionDialog(QDialog):
         self.addresses_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.addresses_label.setWordWrap(True)
         layout.addWidget(self.addresses_label)
+        layout.addWidget(QLabel("Scan this code in Ki Companion to pair:"))
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setMinimumSize(220, 220)
+        self.qr_label.setStyleSheet("background:#f5f7f8; border-radius:12px;")
+        layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.qr_address = QComboBox()
+        self.qr_address.currentTextChanged.connect(self.refresh_qr)
+        layout.addWidget(self.qr_address)
         self.token_label = QLabel()
         self.token_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.token_label.setWordWrap(True)
@@ -322,19 +331,29 @@ class PhoneCompanionDialog(QDialog):
             self.status_label.setText("Phone companion is enabled.")
             addresses = self.bridge.addresses
             if addresses:
+                address_urls = [f"http://{address}:{self.bridge.port}" for address in addresses]
                 self.addresses_label.setText(
                     "PC address (enter in the app):\n"
-                    + "\n".join(f"http://{address}:{self.bridge.port}" for address in addresses)
+                    + "\n".join(address_urls)
                 )
+                self.qr_address.blockSignals(True)
+                self.qr_address.clear()
+                self.qr_address.addItems(address_urls)
+                self.qr_address.blockSignals(False)
+                self.refresh_qr()
             else:
                 self.addresses_label.setText(
                     "No private network address was detected. Connect to Wi-Fi or USB tethering and reopen this panel."
                 )
+                self.qr_label.clear()
+                self.qr_address.clear()
             self.token_label.setText(f"Pairing token: {self.bridge.token}")
             self.toggle_button.setText("Disable phone access")
         else:
             self.status_label.setText("Phone companion is disabled.")
             self.addresses_label.clear()
+            self.qr_label.clear()
+            self.qr_address.clear()
             self.token_label.clear()
             self.toggle_button.setText("Enable phone access")
 
@@ -347,6 +366,33 @@ class PhoneCompanionDialog(QDialog):
         except OSError as error:
             QMessageBox.critical(self, "Could not start phone companion", str(error))
         self.refresh_state()
+
+    def refresh_qr(self, _address=""):
+        address = self.qr_address.currentText()
+        if not self.bridge.enabled or not address:
+            self.qr_label.clear()
+            return
+        try:
+            import qrcode
+
+            payload = json.dumps({"host": address, "token": self.bridge.token})
+            image = qrcode.make(payload).convert("RGB")
+            qr_image = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                image.width * 3,
+                QImage.Format.Format_RGB888,
+            ).copy()
+            self.qr_label.setPixmap(QPixmap.fromImage(qr_image).scaled(
+                220,
+                220,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        except (ImportError, OSError, ValueError) as error:
+            self.qr_label.clear()
+            QMessageBox.warning(self, "Could not create pairing QR", str(error))
 
     def copy_token(self):
         if not self.bridge.enabled:

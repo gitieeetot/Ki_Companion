@@ -20,6 +20,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -58,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -65,26 +67,32 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
 import java.net.Proxy
 import java.net.SocketTimeoutException
+import java.net.URI
+import java.net.URISyntaxException
 import java.net.UnknownHostException
 import java.net.URL
 import java.util.Base64
 import kotlin.random.Random
 
 private val KiBackground = Color(0xFF17191C)
-private val KiSurface = Color(0xFF22262B)
-private val KiSurfaceRaised = Color(0xFF2A3036)
+private val KiSurface = Color(0xD923282D)
+private val KiSurfaceRaised = Color(0xE52A3036)
 private val KiAccent = Color(0xFF8FE8FF)
+private val KiAccentSoft = Color(0xFFB9F2FF)
 private val KiText = Color(0xFFF2F4F6)
 private val KiMuted = Color(0xFFA8B0B9)
 private val KiError = Color(0xFFFF9D94)
@@ -130,6 +138,22 @@ private fun KiCompanionScreen(context: Context) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
+    val qrScanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents ?: return@rememberLauncherForActivityResult
+        try {
+            val pairing = parsePairingCode(contents)
+            host.value = pairing.first
+            token.value = pairing.second
+            preferences.edit().putString("host", host.value).putString("token", token.value).apply()
+            showConnection.value = true
+            status.value = "QR scanned. Tap Test connection to finish pairing."
+            statusIsError.value = false
+        } catch (error: IOException) {
+            status.value = error.message ?: "That QR code is not a Ki pairing code."
+            statusIsError.value = true
+        }
+    }
+
     val installPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -166,7 +190,11 @@ private fun KiCompanionScreen(context: Context) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(KiBackground)
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF222A31), KiBackground, Color(0xFF141619)),
+                ),
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -176,8 +204,8 @@ private fun KiCompanionScreen(context: Context) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("KI", color = KiAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
-                Text("Your companion", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Text("KI  ·  COMPANION", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                Text("Your little buddy", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { showUpdateDialog.value = true }) {
@@ -212,6 +240,14 @@ private fun KiCompanionScreen(context: Context) {
                     preferences.edit().putString("token", it).apply()
                 },
                 busy = busy.value,
+                onScan = {
+                    qrScanner.launch(
+                        ScanOptions()
+                            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                            .setPrompt("Scan the QR code from Ki on your PC")
+                            .setBeepEnabled(false),
+                    )
+                },
                 onTest = {
                     scope.launch {
                         busy.value = true
@@ -356,7 +392,7 @@ private fun KiCompanionScreen(context: Context) {
             text = {
                 Text(
                     "1. On the PC, open Ki → Dashboard → Device & activity → Phone companion.\n\n" +
-                        "2. Enable phone access and enter a displayed http:// address and pairing token here.\n\n" +
+                        "2. Tap Scan QR here and point your camera at the code shown by the PC dashboard. You can also enter the address and pairing token manually.\n\n" +
                         "3. Put both devices on the same Wi-Fi/hotspot, allow Python through the Windows private-network firewall, then tap Test connection.\n\n" +
                         "USB file-transfer mode does not create a network connection. The local chat connection is not encrypted; use a trusted network.",
                     color = KiMuted,
@@ -501,6 +537,7 @@ private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, 
             .height(116.dp),
         shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = KiSurface),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val travel = remember { Animatable(0.02f) }
@@ -533,48 +570,71 @@ private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, 
             }
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val unit = density
-                val faceWidth = 46f * unit
-                val faceHeight = 54f * unit
-                val x = travel.value * (size.width - faceWidth - 24f * unit) + 12f * unit
-                val baseY = size.height - faceHeight - 10f * unit + bob.value * unit
+                val faceWidth = 36f * unit
+                val faceHeight = 40f * unit
+                val x = size.width - faceWidth - 20f * unit + (travel.value - 0.5f) * 12f * unit
+                val baseY = size.height - faceHeight - 24f * unit + bob.value * unit
                 drawRoundRect(
-                    color = Color(0x1439D7FF),
-                    topLeft = androidx.compose.ui.geometry.Offset(x - 7f * unit, baseY - 7f * unit),
-                    size = androidx.compose.ui.geometry.Size(faceWidth + 14f * unit, faceHeight + 14f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(18f * unit),
+                    color = KiAccent.copy(alpha = 0.12f),
+                    topLeft = androidx.compose.ui.geometry.Offset(x - 6f * unit, baseY - 6f * unit),
+                    size = androidx.compose.ui.geometry.Size(faceWidth + 12f * unit, faceHeight + 12f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(15f * unit),
                 )
                 drawRoundRect(
                     color = Color(0xFF30383F),
                     topLeft = androidx.compose.ui.geometry.Offset(x, baseY),
                     size = androidx.compose.ui.geometry.Size(faceWidth, faceHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(15f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(13f * unit),
                 )
                 drawRoundRect(
-                    color = Color(0xFF8FE8FF),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 5f * unit, baseY + 6f * unit),
-                    size = androidx.compose.ui.geometry.Size(faceWidth - 10f * unit, faceHeight - 16f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f * unit),
+                    color = Color(0xFF30383F),
+                    topLeft = androidx.compose.ui.geometry.Offset(x + 6f * unit, baseY - 9f * unit),
+                    size = androidx.compose.ui.geometry.Size(4f * unit, 10f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f * unit),
                 )
-                val eyesY = baseY + 23f * unit
-                drawCircle(Color(0xFF17242C), radius = 3f * unit, center = androidx.compose.ui.geometry.Offset(x + 17f * unit, eyesY))
-                drawCircle(Color(0xFF17242C), radius = 3f * unit, center = androidx.compose.ui.geometry.Offset(x + 29f * unit, eyesY))
+                drawCircle(
+                    color = KiAccent,
+                    radius = 2.5f * unit,
+                    center = androidx.compose.ui.geometry.Offset(x + 8f * unit, baseY - 10f * unit),
+                )
+                drawRoundRect(
+                    color = KiAccentSoft,
+                    topLeft = androidx.compose.ui.geometry.Offset(x + 4f * unit, baseY + 5f * unit),
+                    size = androidx.compose.ui.geometry.Size(faceWidth - 8f * unit, faceHeight - 13f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f * unit),
+                )
+                val eyesY = baseY + 18f * unit
+                drawCircle(Color(0xFF17242C), radius = 2.3f * unit, center = androidx.compose.ui.geometry.Offset(x + 13f * unit, eyesY))
+                drawCircle(Color(0xFF17242C), radius = 2.3f * unit, center = androidx.compose.ui.geometry.Offset(x + 23f * unit, eyesY))
                 val mouth = Path().apply {
-                    moveTo(x + 19f * unit, baseY + 37f * unit)
-                    quadraticTo(x + 23f * unit, baseY + 41f * unit, x + 28f * unit, baseY + 37f * unit)
+                    moveTo(x + 15f * unit, baseY + 27f * unit)
+                    quadraticTo(x + 18f * unit, baseY + 30f * unit, x + 21f * unit, baseY + 27f * unit)
                 }
-                drawPath(mouth, color = Color(0xFF17242C), style = Stroke(width = 1.7f * unit))
+                drawPath(mouth, color = Color(0xFF17242C), style = Stroke(width = 1.4f * unit))
+                drawRoundRect(
+                    color = Color(0xFF30383F),
+                    topLeft = androidx.compose.ui.geometry.Offset(x - 4f * unit, baseY + 22f * unit),
+                    size = androidx.compose.ui.geometry.Size(5f * unit, 12f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
+                )
+                drawRoundRect(
+                    color = Color(0xFF30383F),
+                    topLeft = androidx.compose.ui.geometry.Offset(x + faceWidth - unit, baseY + 22f * unit),
+                    size = androidx.compose.ui.geometry.Size(5f * unit, 12f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
+                )
                 val footOffset = if (isThinking) 0f else bob.value * unit
                 drawRoundRect(
-                    color = Color(0xFF8FE8FF),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 9f * unit, baseY + faceHeight - 5f * unit + footOffset),
-                    size = androidx.compose.ui.geometry.Size(10f * unit, 7f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f * unit),
+                    color = Color(0xFF30383F),
+                    topLeft = androidx.compose.ui.geometry.Offset(x + 6f * unit, baseY + faceHeight - 1f * unit + footOffset),
+                    size = androidx.compose.ui.geometry.Size(10f * unit, 6f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
                 )
                 drawRoundRect(
-                    color = Color(0xFF8FE8FF),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 27f * unit, baseY + faceHeight - 5f * unit - footOffset),
-                    size = androidx.compose.ui.geometry.Size(10f * unit, 7f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f * unit),
+                    color = Color(0xFF30383F),
+                    topLeft = androidx.compose.ui.geometry.Offset(x + 21f * unit, baseY + faceHeight - 1f * unit - footOffset),
+                    size = androidx.compose.ui.geometry.Size(10f * unit, 6f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
                 )
             }
             Column(
@@ -610,12 +670,14 @@ private fun ConnectionCard(
     onHostChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     busy: Boolean,
+    onScan: () -> Unit,
     onTest: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = KiSurface),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
         Column(
             modifier = Modifier.padding(13.dp),
@@ -628,6 +690,17 @@ private fun ConnectionCard(
             ) {
                 Text("PC connection", color = KiText, fontWeight = FontWeight.SemiBold)
                 Text("Local only", color = KiAccent, fontSize = 11.sp)
+            }
+            Button(
+                onClick = onScan,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(13.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF3A6975),
+                    contentColor = KiText,
+                ),
+            ) {
+                Text("Scan PC pairing QR")
             }
             OutlinedTextField(
                 value = host,
@@ -738,6 +811,41 @@ private fun kiTextFieldColors() = androidx.compose.material3.TextFieldDefaults.c
     focusedLabelColor = KiAccent,
     unfocusedLabelColor = KiMuted,
 )
+
+private fun parsePairingCode(contents: String): Pair<String, String> {
+    if (contents.length > 2_048) throw IOException("That QR code is too large to be a Ki pairing code.")
+    val pairing = try {
+        JSONObject(contents)
+    } catch (error: JSONException) {
+        throw IOException("That QR code is not a Ki pairing code.", error)
+    }
+    val host = pairing.optString("host").trim().trimEnd('/')
+    val token = pairing.optString("token").trim()
+    val uri = try {
+        URI(host)
+    } catch (error: URISyntaxException) {
+        throw IOException("The QR code contains an invalid PC address.", error)
+    }
+    if (uri.scheme != "http" || uri.port != 8765 || uri.rawUserInfo != null ||
+        uri.rawQuery != null || uri.rawFragment != null || uri.rawPath !in listOf("", "/")
+    ) {
+        throw IOException("Use a Ki pairing QR code for the local PC bridge.")
+    }
+    val octets = uri.host?.split('.')
+        ?: throw IOException("The QR code must contain the PC's private IPv4 address.")
+    if (octets.size != 4) throw IOException("The QR code must contain the PC's private IPv4 address.")
+    val address = octets.map { component ->
+        component.toIntOrNull()?.takeIf { it in 0..255 }
+            ?: throw IOException("The QR code contains an invalid private IPv4 address.")
+    }
+    val privateAddress = address[0] == 10 ||
+        (address[0] == 172 && address[1] in 16..31) ||
+        (address[0] == 192 && address[1] == 168) ||
+        (address[0] == 169 && address[1] == 254)
+    if (!privateAddress) throw IOException("The QR code must point to a private local network address.")
+    if (token.isBlank() || token.length > 256) throw IOException("The QR code does not contain a valid pairing token.")
+    return host to token
+}
 
 private fun normalizeHost(value: String): String {
     val host = value.trim().trimEnd('/')

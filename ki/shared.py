@@ -19,7 +19,7 @@ import os
 import shutil
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QThread, Signal, QSettings, QObject, QEvent, QUrl, QSize
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QFont, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QFont, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFrame, QScrollArea, QComboBox, QMessageBox, QFileDialog, QGridLayout, QSizeGrip, QSizePolicy, QPlainTextEdit, QProgressBar, QSlider, QMenu, QStackedWidget
 import json
 import urllib.error
