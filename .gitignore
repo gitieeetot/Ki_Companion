@@ -6,3 +6,8 @@ __pycache__/
 models/
 .env
 .env.*
+android/.gradle/
+android/**/build/
+android/local.properties
+*.jks
+*.keystore

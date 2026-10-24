@@ -65,6 +65,7 @@ def main():
     splash = KiBootWindow()
     startup = KiStartupController(robot, splash, app)
     app.aboutToQuit.connect(robot.agent_monitor.close_server)
+    app.aboutToQuit.connect(robot.phone_bridge.stop)
     splash.show()
     startup.start()
     exit_code = app.exec()

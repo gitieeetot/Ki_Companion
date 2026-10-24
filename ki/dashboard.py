@@ -268,6 +268,93 @@ class GitToolsDialog(QDialog):
             report = report[:30000] + "\n\n[Output truncated at 30,000 characters.]"
         self.output.setPlainText(report)
 
+class PhoneCompanionDialog(QDialog):
+    def __init__(self, bridge, parent=None):
+        super().__init__(parent)
+        self.bridge = bridge
+        self.setWindowTitle("Ki phone companion")
+        self.setMinimumWidth(390)
+        layout = QVBoxLayout(self)
+        title = QLabel("Connect your Android phone")
+        title.setStyleSheet("font-size:18px; font-weight:700;")
+        layout.addWidget(title)
+        explanation = QLabel(
+            "Keep Ki and your phone on the same Wi-Fi/hotspot, or connect using USB tethering. "
+            "Enter one of the addresses and the pairing token in the Android app. If Windows asks, allow access "
+            "on private networks only."
+        )
+        explanation.setWordWrap(True)
+        explanation.setObjectName("muted")
+        layout.addWidget(explanation)
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        self.addresses_label = QLabel()
+        self.addresses_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.addresses_label.setWordWrap(True)
+        layout.addWidget(self.addresses_label)
+        self.token_label = QLabel()
+        self.token_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.token_label.setWordWrap(True)
+        layout.addWidget(self.token_label)
+        warning = QLabel(
+            "Security: this local connection uses HTTP, not encryption. Use only on a trusted private "
+            "network. The token protects the chat endpoint; disable the bridge when you are finished."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color:#e7b96e;")
+        layout.addWidget(warning)
+        buttons = QHBoxLayout()
+        self.toggle_button = QPushButton()
+        self.toggle_button.clicked.connect(self.toggle_bridge)
+        buttons.addWidget(self.toggle_button)
+        copy_button = QPushButton("Copy pairing token")
+        copy_button.clicked.connect(self.copy_token)
+        buttons.addWidget(copy_button)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.refresh_state()
+
+    def refresh_state(self):
+        if self.bridge.enabled:
+            self.status_label.setText("Phone companion is enabled.")
+            addresses = self.bridge.addresses
+            if addresses:
+                self.addresses_label.setText(
+                    "PC address (enter in the app):\n"
+                    + "\n".join(f"http://{address}:{self.bridge.port}" for address in addresses)
+                )
+            else:
+                self.addresses_label.setText(
+                    "No private network address was detected. Connect to Wi-Fi or USB tethering and reopen this panel."
+                )
+            self.token_label.setText(f"Pairing token: {self.bridge.token}")
+            self.toggle_button.setText("Disable phone access")
+        else:
+            self.status_label.setText("Phone companion is disabled.")
+            self.addresses_label.clear()
+            self.token_label.clear()
+            self.toggle_button.setText("Enable phone access")
+
+    def toggle_bridge(self):
+        try:
+            if self.bridge.enabled:
+                self.bridge.stop()
+            else:
+                self.bridge.start()
+        except OSError as error:
+            QMessageBox.critical(self, "Could not start phone companion", str(error))
+        self.refresh_state()
+
+    def copy_token(self):
+        if not self.bridge.enabled:
+            QMessageBox.information(self, "Phone companion disabled", "Enable phone access before copying its token.")
+            return
+        QApplication.clipboard().setText(self.bridge.token)
+
+
 class DashboardAudioSettingsDialog(QDialog):
     """One dashboard page for Ki's listening and speech preferences."""
 
@@ -502,6 +589,7 @@ class DashboardWindow(QDialog):
         self.agent_monitor = agent_monitor
         self.quit_callback = None
         self.chat_navigation_callback = None
+        self.phone_bridge = None
         self._agent_latest_event = None
         self._music_is_playing = False
         self.setWindowTitle("Ki Dashboard")
@@ -751,8 +839,15 @@ class DashboardWindow(QDialog):
         self.agent_monitor_button.clicked.connect(self.toggle_agent_monitor)
         agents_tile.layout().addWidget(self.agent_monitor_button)
         status_grid.addWidget(agents_tile, 1, 1)
+        phone_tile = self.make_action_tile(
+            "Phone companion",
+            "Connect the Android app on your Wi-Fi, hotspot, or USB-tethered network",
+            "Pair phone",
+            self.open_phone_companion,
+        )
+        status_grid.addWidget(phone_tile, 2, 0, 1, 2)
         self.status_grid = status_grid
-        self.status_tiles = [battery_tile, task_tile, snipping_tile, agents_tile]
+        self.status_tiles = [battery_tile, task_tile, snipping_tile, agents_tile, phone_tile]
         content_layout.addLayout(status_grid)
 
         apps_header = QHBoxLayout()
@@ -870,6 +965,13 @@ class DashboardWindow(QDialog):
     def open_audio_settings(self):
         self.chat.react_robot("curious", 0.8)
         dialog = DashboardAudioSettingsDialog(self.chat, self, self.quit_callback)
+        dialog.exec()
+
+    def open_phone_companion(self):
+        if self.phone_bridge is None:
+            QMessageBox.warning(self, "Phone companion unavailable", "The phone companion service is not available.")
+            return
+        dialog = PhoneCompanionDialog(self.phone_bridge, self)
         dialog.exec()
 
     def open_ki_summary(self):

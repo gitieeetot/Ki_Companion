@@ -11,17 +11,45 @@ Ki is a Windows desktop companion with a draggable floating robot, local text ch
 - Keep recent chat context during the current app session.
 - Right-click Ki’s floating face for read-only Git status, changed-file diff, and recent commit views. Ki does not stage, commit, push, or modify files through these tools.
 - Drop supported text/data files onto Ki’s face to add them to the selected project when Project mode is active, or to chat attachments otherwise. Ki briefly animates as it accepts the files.
-- Show expressive face reactions while idle, listening, thinking, speaking, and briefly when clicked. Ki looks toward the pointer, blinks, and occasionally changes expression while idle. A small red dot appears only while audio input is starting or active. When media is playing, Ki dances and its face turns into an animated audio-frequency display; the dance stops when playback stops. Ki also occasionally does a short spontaneous dance while idle. Ki reflects Windows battery/charging and CPU busy/idle status. Drag the floating face to move it; single-click for a playful reaction, double-click to open the chat/control panel, or right-click for Git tools.
+- Show expressive face reactions while idle, listening, thinking, speaking, and briefly when clicked. Ki looks toward the pointer, blinks, and occasionally changes expression while idle. While idle, Ki may also randomly stand, walk around its spot for about 20 steps over 12–15 seconds, then return, sit, or tuck away its hands and feet. The walk covers a wider area while keeping Ki inset from screen edges. Interrupting a walk shows a reaction and animates Ki back to its starting position. A small red dot appears only while audio input is starting or active. When media is playing, Ki dances and its face turns into an animated audio-frequency display; the dance stops when playback stops. Ki also occasionally does a short spontaneous dance while idle. Ki reflects Windows battery/charging and CPU busy/idle status. Drag the floating face to move it; single-click for a playful reaction, double-click to open the chat/control panel, or right-click for Git tools.
 
 Audio capture stays off until you press **Talk**, hold **Ctrl + Alt + Space**, or explicitly start ambient listening in Dashboard → Voice & sound. Choose the microphone and source in that dashboard setting. Laptop sound uses Windows audio loopback and captures whatever the computer is playing. Ambient listening can be stopped from the same setting; recognized words are added to the chat message box for review and are never auto-sent. You can use **Ctrl + Alt + Space** while the chat is minimized: the floating face listens, sends your speech, and speaks Ki’s reply without bringing the chat window forward. While Ki is speaking, press **Ctrl + Alt + Backspace** to stop the reply, or hold **Ctrl + Alt + Space** to interrupt it and start listening. Releasing the talk shortcut stops capture, processes the remaining audio, and sends the transcript automatically; wait for the listening status before speaking, especially on first use. Mic input uses shorter audio blocks and transcription ends after a brief phrase-ending pause; Ki drains the last captured audio before finalizing. It stops after 30 seconds or when you press **Stop**. Audio is processed in memory and is not saved or uploaded. The English speech model downloads on first use and is cached locally. Ki transcribes speech locally with Vosk; a first use may take longer while the model loads. The local Ollama API is contacted only at 127.0.0.1. Ki does not call a cloud AI API. Project mode edits only the files you select, only in Edit mode, and only after you review the diff and approve it. Existing files are backed up in .ki-backups. Ki does not delete files or run arbitrary terminal commands. Its Git tools run only read-only status, diff, and recent-log commands. It can open only Calculator or Notepad after you confirm, and reads Windows battery and CPU activity status for the face reaction.
 
 Wake-word and clap detection are not implemented. Ambient listening is an explicit dashboard toggle: it stays off until you start it and shows a listening status while active.
+
+## Android companion (starter)
+
+The native Android app is in `android/` (Android 8.0 or newer). It has a dark charcoal-and-cyan chat UI, a small animated Ki that wanders across the companion card, saved pairing details, connection checks that distinguish PC/firewall issues from Ollama/model setup, UTF-8 text attachments up to 512 KB, and a **Updates** screen that checks GitHub Releases, downloads the APK, verifies its package/version, and hands installation to Android for your confirmation. Update checks use public GitHub release data; the repository and Android releases must be public. It does not expose desktop controls, run commands, or save uploaded files on the PC.
+
+To pair, start Ki and open Dashboard → Device & activity → Phone companion. Enable phone access only when needed, then enter one of the displayed PC addresses and the pairing token in the Android app. If Windows asks about the firewall, allow Python on private networks only. The phone and PC must be on the same Wi-Fi/hotspot or a reachable USB-tethering network. USB file-transfer/MTP mode by itself is not a network connection.
+
+The bridge is disabled by default, accepts only authenticated chat/status requests, and stops when Ki exits. The connection currently uses unencrypted HTTP with a random pairing token; use it only on a trusted private network and disable it when finished. After Android app changes, rebuild and reinstall the APK: open `android/` in Android Studio with Android SDK Platform 35 and JDK 17, or run `android\gradlew.bat :app:assembleDebug` from the repository root. The first build downloads Gradle 8.10.2 through the included wrapper.
+
+### Publishing Android updates on GitHub
+
+The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.1` is pushed. It publishes the file as `KiCompanion.apk`; the in-app updater looks for this asset on Android releases.
+
+Before the first release, create a long-lived Android signing key and back it up securely. Never commit the keystore or its passwords:
+
+    keytool -genkeypair -v -keystore ki-companion-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias ki-companion
+
+Add these GitHub repository Actions secrets: `KI_RELEASE_KEYSTORE_BASE64` (the keystore file encoded as one Base64 string), `KI_RELEASE_STORE_PASSWORD`, `KI_RELEASE_KEY_ALIAS`, and `KI_RELEASE_KEY_PASSWORD`. On Windows, copy the Base64 value without writing the key into the repository with:
+
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes("ki-companion-release.jks")) | Set-Clipboard
+
+Then push an Android version tag to start a release:
+
+    git tag android-v0.1.1
+    git push origin android-v0.1.1
+
+The workflow assigns increasing Android `versionCode` values from the tag. Every future APK must be signed with the same keystore; losing it prevents Android from accepting app updates. The APK currently installed by copying the development/debug build is signed with a different key. Install the first GitHub-signed release as a fresh install (uninstalling the debug build removes its app data); after that, in-app updates can install over the app while preserving its data. A private GitHub repository cannot be checked by this public-release updater; do not embed a personal access token in the app.
 
 ## Requirements
 
 - Windows 10 or newer
 - Python 3.10 or newer
 - Ollama for Windows with Qwen3:1.7b
+- Android Studio with Android SDK 35 and JDK 17 to build the optional Android companion
 - Internet access for one-time software and model downloads
 - Windows microphone privacy access enabled for desktop apps when using microphone input
 - PyAudioWPatch, installed with the requirements, for capturing laptop audio through Windows WASAPI loopback
@@ -88,6 +116,7 @@ Ki can edit only selected, fully supplied text files or create a new supported t
 - main.py — compatibility entry point used by Ki.vbs
 - ki/shared.py — shared imports, icons, app paths, and helper functions
 - ki/services.py — voice workers, local Ollama, web search, and OpenCode monitor
+- ki/phone_bridge.py — opt-in, token-protected local Android chat bridge
 - ki/chat.py — chat window and conversation flow
 - ki/dashboard.py — dashboard, settings, Git, and activity dialogs
 - ki/panel.py — combined chat/control panel window
@@ -96,4 +125,5 @@ Ki can edit only selected, fully supplied text files or create a new supported t
 - ki/app.py — Qt application setup and single-instance launcher
 - requirements.txt — PySide6, sounddevice, Vosk, and pyttsx3
 - Ki.vbs — opens Ki without showing a terminal
+- android/ — native Android companion app project
 - .gitignore — ignores Python cache and local virtual environments

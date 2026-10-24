@@ -5,6 +5,12 @@ from .services import OpenCodeMonitor
 from .chat import ChatWindow
 from .dashboard import DashboardWindow, GitToolsDialog
 from .panel import CompanionWindow
+from .phone_bridge import PhoneCompanionServer
+
+WALK_STEPS = 20
+WALK_DISTANCE_X = 120
+WALK_DISTANCE_Y = 70
+
 
 class RobotWidget(QWidget):
     """Draggable companion face with expressive single- and double-click reactions."""
@@ -36,6 +42,16 @@ class RobotWidget(QWidget):
         self.music_singing = False
         self._random_dance_until = 0.0
         self._next_random_dance = time.monotonic() + random.uniform(20, 40)
+        self._idle_pose = None
+        self._idle_pose_until = 0.0
+        self._next_idle_pose = time.monotonic() + random.uniform(25, 45)
+        self._walk_origin = None
+        self._walk_started = 0.0
+        self._walk_duration = 0.0
+        self._walk_return_start = None
+        self._walk_return_target = None
+        self._walk_return_started = 0.0
+        self._walk_return_duration = 0.0
         self.idle_expression = "neutral"
         self._next_idle_expression = time.monotonic() + random.uniform(6, 12)
         self._idle_expression_until = 0.0
@@ -58,8 +74,10 @@ class RobotWidget(QWidget):
         self.chat.audio_ready_callback = self.set_audio_ready
         self.chat.music_state_callback = self.set_music_singing
         self.agent_monitor = OpenCodeMonitor()
+        self.phone_bridge = PhoneCompanionServer()
         self.dashboard = DashboardWindow(self.chat, self.agent_monitor)
         self.dashboard.quit_callback = self.request_quit
+        self.dashboard.phone_bridge = self.phone_bridge
         self.companion = CompanionWindow(self.chat, self.dashboard)
         self.chat.dashboard_navigation_callback = lambda: self.show_companion("controls")
         self.chat.dashboard_settings_callback = self.open_dashboard_audio_settings
@@ -75,7 +93,10 @@ class RobotWidget(QWidget):
         screen = QApplication.primaryScreen()
         if screen:
             area = screen.availableGeometry()
-            self.move(area.right() - self.width() - 28, area.bottom() - self.height() - 36)
+            self.move(self.clamp_to_safe_area(
+                QPoint(area.right() - self.width() - 36, area.bottom() - self.height() - 44),
+                screen,
+            ))
 
     def open_chat(self):
         self.show_companion("chat")
@@ -87,6 +108,56 @@ class RobotWidget(QWidget):
         self._click_fx_kind = random.choice(("spark", "wave", "heart"))
         self._click_fx_until = time.monotonic() + 0.72
         self.react(random.choice(("happy", "wink", "curious", "excited")), 0.9)
+
+    def clamp_to_safe_area(self, position, screen=None):
+        screen = screen or QApplication.screenAt(
+            position + QPoint(self.width() // 2, self.height() // 2)
+        ) or QApplication.primaryScreen()
+        if screen is None:
+            return position
+        area = screen.availableGeometry()
+        margin_x = min(28, max(0, (area.width() - self.width()) // 2))
+        margin_y = min(28, max(0, (area.height() - self.height()) // 2))
+        min_x = area.left() + margin_x
+        max_x = area.right() - self.width() + 1 - margin_x
+        min_y = area.top() + margin_y
+        max_y = area.bottom() - self.height() + 1 - margin_y
+        return QPoint(
+            max(min_x, min(position.x(), max_x)),
+            max(min_y, min(position.y(), max_y)),
+        )
+
+    def interrupt_idle_pose(self, expression="surprised"):
+        if self._walk_origin is not None and self._walk_return_start is None:
+            self._walk_return_start = self.pos()
+            self._walk_return_target = self._walk_origin
+            self._walk_return_started = time.monotonic()
+            self._walk_return_duration = 0.65
+            self.react(expression, 1.0)
+        self._walk_origin = None
+        self._walk_started = 0.0
+        self._walk_duration = 0.0
+        self._idle_pose = None
+        self._idle_pose_until = 0.0
+        if self._walk_return_start is None:
+            self._walk_return_target = None
+            self._walk_return_started = 0.0
+            self._walk_return_duration = 0.0
+
+    def finish_walk_return(self):
+        if self._walk_return_target is not None:
+            self.move(self.clamp_to_safe_area(self._walk_return_target))
+        self._walk_return_start = None
+        self._walk_return_target = None
+        self._walk_return_started = 0.0
+        self._walk_return_duration = 0.0
+
+    def finish_idle_pose(self):
+        self._walk_origin = None
+        self._walk_started = 0.0
+        self._walk_duration = 0.0
+        self._idle_pose = None
+        self._idle_pose_until = 0.0
 
     def handle_face_double_click(self):
         self.react("surprised", 0.8)
@@ -166,6 +237,8 @@ class RobotWidget(QWidget):
         if playing != self.music_singing:
             self._random_dance_until = 0.0
             self._next_random_dance = time.monotonic() + random.uniform(20, 40)
+            self.interrupt_idle_pose("surprised")
+            self._next_idle_pose = time.monotonic() + random.uniform(25, 45)
         self.music_singing = playing
         if self.music_singing:
             self.react("excited", 1.1)
@@ -176,6 +249,8 @@ class RobotWidget(QWidget):
         if state != "idle":
             self._random_dance_until = 0.0
             self._next_random_dance = time.monotonic() + random.uniform(20, 40)
+            self.interrupt_idle_pose("concerned")
+            self._next_idle_pose = time.monotonic() + random.uniform(25, 45)
         self.state = state
         self.setToolTip(self.state_tooltip())
         self.update()
@@ -284,6 +359,21 @@ class RobotWidget(QWidget):
             self.expression = None
         if now >= self._click_fx_until:
             self._click_fx_kind = ""
+        if self._walk_return_start is not None and self._walk_return_target is not None:
+            progress = min(
+                1.0,
+                max(0.0, (now - self._walk_return_started) / self._walk_return_duration),
+            )
+            eased = progress * progress * (3 - 2 * progress)
+            start = self._walk_return_start
+            target = self._walk_return_target
+            return_position = QPoint(
+                round(start.x() + (target.x() - start.x()) * eased),
+                round(start.y() + (target.y() - start.y()) * eased),
+            )
+            self.move(self.clamp_to_safe_area(return_position))
+            if progress >= 1:
+                self.finish_walk_return()
         if self.state == "idle" and not self.music_singing:
             if self._random_dance_until and now >= self._random_dance_until:
                 self._random_dance_until = 0.0
@@ -291,6 +381,40 @@ class RobotWidget(QWidget):
                 self._random_dance_until = now + random.uniform(3.0, 5.0)
                 self._next_random_dance = self._random_dance_until + random.uniform(35, 75)
                 self.react(random.choice(("happy", "excited", "wink")), 1.2)
+            if self._idle_pose and now >= self._idle_pose_until:
+                self.finish_idle_pose()
+                self._next_idle_pose = now + random.uniform(45, 90)
+            if (
+                not self._idle_pose
+                and not self._random_dance_until
+                and self._drag_offset is None
+                and not self.audio_connecting
+                and not self.audio_ready
+                and not self._transition_kind
+                and now >= self._next_idle_pose
+            ):
+                self._idle_pose = random.choice(("stand", "walk", "sit", "hide"))
+                pose_duration = random.uniform(12.0, 15.0) if self._idle_pose == "walk" else random.uniform(3.0, 5.0)
+                self._idle_pose_until = now + pose_duration
+                self._next_idle_pose = self._idle_pose_until
+                if self._idle_pose == "walk":
+                    self._walk_origin = self.pos()
+                    self._walk_started = now
+                    self._walk_duration = self._idle_pose_until - now
+                if self._idle_pose == "stand":
+                    self.react("excited", 1.0)
+                elif self._idle_pose == "sit":
+                    self.react("sleepy", 1.0)
+                else:
+                    self.react("curious", 1.0)
+            if self._idle_pose == "walk" and self._walk_origin is not None:
+                progress = min(1.0, max(0.0, (now - self._walk_started) / self._walk_duration))
+                envelope = math.sin(math.pi * progress)
+                step_phase = math.tau * (WALK_STEPS / 2) * progress
+                horizontal = round(WALK_DISTANCE_X * math.sin(step_phase) * envelope)
+                vertical = round(WALK_DISTANCE_Y * math.sin(step_phase * 2) * envelope)
+                walk_position = self._walk_origin + QPoint(horizontal, vertical)
+                self.move(self.clamp_to_safe_area(walk_position))
         if self.state == "idle" and not self.expression and now >= self._next_idle_expression:
             self.idle_expression = random.choice(("happy", "curious", "sleepy", "surprised", "wink", "excited", "confused"))
             self._idle_expression_until = now + random.uniform(1.2, 2.4)
@@ -334,6 +458,8 @@ class RobotWidget(QWidget):
         dancing = self.state == "idle" and (
             self.music_singing or now < self._random_dance_until
         )
+        idle_pose = self._idle_pose if self.state == "idle" and now < self._idle_pose_until else None
+        pose_motion = self.phase * 2.0
         if dancing:
             bounce = 2.2 * (0.5 - 0.5 * math.cos(self.phase * 2))
             sway = 5.5 * math.sin(self.phase)
@@ -347,6 +473,35 @@ class RobotWidget(QWidget):
             leg_swing = 4 * math.sin(self.phase * 2.0 + math.pi / 2)
             p.drawLine(QPointF(39, 84), QPointF(37 + leg_swing, 96))
             p.drawLine(QPointF(65, 84), QPointF(67 - leg_swing, 96))
+        elif idle_pose:
+            p.setPen(QPen(QColor("#a8edff"), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            if idle_pose == "walk":
+                walk_progress = min(
+                    1.0,
+                    max(0.0, (now - self._walk_started) / self._walk_duration),
+                ) if self._walk_duration else 0.0
+                step_phase = math.tau * (WALK_STEPS / 2) * walk_progress
+                step = math.sin(step_phase) * 5
+                bounce = abs(math.sin(step_phase)) * 2
+                p.translate(0, -bounce)
+                p.drawLine(QPointF(17, 56), QPointF(8, 50 + step))
+                p.drawLine(QPointF(87, 56), QPointF(96, 50 - step))
+                p.drawLine(QPointF(39, 84), QPointF(37 + step, 97))
+                p.drawLine(QPointF(65, 84), QPointF(67 - step, 97))
+            elif idle_pose == "sit":
+                p.translate(0, 4)
+                p.drawLine(QPointF(18, 60), QPointF(10, 72))
+                p.drawLine(QPointF(86, 60), QPointF(94, 72))
+                p.drawLine(QPointF(39, 84), QPointF(30, 94))
+                p.drawLine(QPointF(65, 84), QPointF(74, 94))
+                p.drawLine(QPointF(30, 94), QPointF(42, 94))
+                p.drawLine(QPointF(74, 94), QPointF(62, 94))
+            elif idle_pose == "stand":
+                arm_lift = 5 + 2 * math.sin(pose_motion)
+                p.drawLine(QPointF(17, 56), QPointF(10, 48 - arm_lift))
+                p.drawLine(QPointF(87, 56), QPointF(94, 48 - arm_lift))
+                p.drawLine(QPointF(39, 84), QPointF(38, 96))
+                p.drawLine(QPointF(65, 84), QPointF(66, 96))
         glow = QRadialGradient(52, 51, 50)
         glow.setColorAt(0, QColor(235, 235, 235, 24 + int(pulse * 15)))
         glow.setColorAt(1, QColor(235, 235, 235, 0))
@@ -555,6 +710,8 @@ class RobotWidget(QWidget):
         if self._transition_kind or self._quit_requested:
             event.ignore()
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._walk_origin is not None:
+            self.interrupt_idle_pose("surprised")
         if event.button() == Qt.MouseButton.RightButton:
             self.show_companion_tools(event.globalPosition().toPoint())
             event.accept()
@@ -654,6 +811,10 @@ class RobotWidget(QWidget):
                     self.update()
                     event.accept()
                     return
+                self._walk_return_start = None
+                self._walk_return_target = None
+                self._walk_return_started = 0.0
+                self._walk_return_duration = 0.0
                 self._dragging = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
             if self._last_drag_global is not None:
@@ -661,7 +822,7 @@ class RobotWidget(QWidget):
                 self.gaze_x = max(-3.0, min(3.0, self.gaze_x + delta.x() * 0.25))
                 self.gaze_y = max(-2.0, min(2.0, self.gaze_y + delta.y() * 0.20))
             self._last_drag_global = current
-            self.move(current - self._drag_offset)
+            self.move(self.clamp_to_safe_area(current - self._drag_offset))
             self.raise_()
             self.update()
             event.accept()
