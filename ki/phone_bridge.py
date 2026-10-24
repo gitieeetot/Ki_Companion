@@ -64,6 +64,7 @@ class PhoneCompanionServer(QObject):
     """Opt-in, token-protected LAN bridge limited to chat and text attachments."""
 
     speak_requested = Signal(str)
+    chat_received = Signal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -174,6 +175,7 @@ class PhoneCompanionServer(QObject):
                     if not isinstance(payload, dict):
                         raise ValueError("Request must be a JSON object.")
                     messages = bridge._validate_messages(payload.get("messages"))
+                    user_message = messages[-1]["content"]
                     attachment = payload.get("attachment")
                     bridge._add_attachment(messages, attachment)
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, AttributeError) as error:
@@ -184,6 +186,7 @@ class PhoneCompanionServer(QObject):
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
                     self._send_json(502, {"error": str(error)})
                     return
+                bridge.chat_received.emit(user_message, answer)
                 if payload.get("speak_on_pc") is True:
                     bridge.speak_requested.emit(answer)
                 self._send_json(200, {"answer": answer})

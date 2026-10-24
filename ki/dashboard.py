@@ -274,8 +274,21 @@ class PhoneCompanionDialog(QDialog):
         self.bridge = bridge
         self.setWindowTitle("Ki phone companion")
         self.setMinimumSize(460, 620)
+        self.setStyleSheet("""
+            QDialog { background:#30343a; color:#f2f4f6; }
+            QWidget#phoneCompanionContent { background:#30343a; }
+            QLabel { color:#f2f4f6; }
+            QLabel#muted { color:#c1c7cf; }
+            QScrollArea { border:0; background:#30343a; }
+            QScrollArea > QWidget > QWidget { background:#30343a; }
+            QComboBox { background:#3a3f46; color:#f2f4f6; border:1px solid #555c65; border-radius:7px; padding:6px; }
+            QComboBox QAbstractItemView { background:#3a3f46; color:#f2f4f6; selection-background-color:#505963; }
+            QPushButton { background:#3a3f46; color:#f2f4f6; border:1px solid #555c65; border-radius:10px; padding:0 10px; min-height:36px; }
+            QPushButton:hover { background:#4a515a; }
+        """)
         layout = QVBoxLayout(self)
         self.content = QWidget()
+        self.content.setObjectName("phoneCompanionContent")
         content_layout = QVBoxLayout(self.content)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

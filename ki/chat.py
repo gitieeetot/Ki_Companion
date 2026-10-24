@@ -369,6 +369,14 @@ class ChatWindow(QDialog):
         QTimer.singleShot(20, lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         return bubble
 
+    def show_phone_conversation(self, user_message, answer):
+        self.history.extend((
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": answer},
+        ))
+        self.add_message("user", user_message)
+        self.add_message("assistant", answer)
+
     def update_pending_status(self, message):
         if self.pending is not None:
             self.pending.setText(message)

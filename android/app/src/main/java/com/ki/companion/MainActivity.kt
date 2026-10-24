@@ -354,31 +354,6 @@ private fun KiCompanionScreen(context: Context) {
             },
         )
 
-        Card(
-            onClick = { showSettings.value = true },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = KiSurface),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text("PC connection", color = KiText, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (host.value.isBlank()) "Pair your Windows PC in Settings" else status.value,
-                        color = if (statusIsError.value) KiError else KiMuted,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                    )
-                }
-                Text("Settings  ›", color = KiAccent, fontSize = 12.sp)
-            }
-        }
-
         if (messages.isEmpty()) {
             EmptyChatCard(modifier = Modifier.weight(1f))
         } else {
@@ -596,7 +571,7 @@ private fun KiCompanionScreen(context: Context) {
                         }
                     }
                     Text(
-                        "Phone replies use Android text-to-speech. PC replies use Ki's selected Windows voice.",
+                        "Text replies appear in this app and Ki's Windows chat. Spoken replies use Android text-to-speech or Ki's selected Windows voice.",
                         color = KiMuted,
                         fontSize = 11.sp,
                     )
