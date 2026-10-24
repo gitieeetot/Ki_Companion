@@ -273,11 +273,18 @@ class PhoneCompanionDialog(QDialog):
         super().__init__(parent)
         self.bridge = bridge
         self.setWindowTitle("Ki phone companion")
-        self.setMinimumWidth(390)
+        self.setMinimumSize(460, 620)
         layout = QVBoxLayout(self)
+        self.content = QWidget()
+        content_layout = QVBoxLayout(self.content)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.content)
+        layout.addWidget(scroll, 1)
         title = QLabel("Connect your Android phone")
         title.setStyleSheet("font-size:18px; font-weight:700;")
-        layout.addWidget(title)
+        content_layout.addWidget(title)
         explanation = QLabel(
             "Keep Ki and your phone on the same Wi-Fi/hotspot, or connect using USB tethering. "
             "Open Settings → PC connection in Ki Companion and scan the QR code below. Choose the PC network address "
@@ -286,34 +293,35 @@ class PhoneCompanionDialog(QDialog):
         )
         explanation.setWordWrap(True)
         explanation.setObjectName("muted")
-        layout.addWidget(explanation)
+        content_layout.addWidget(explanation)
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        content_layout.addWidget(self.status_label)
+        content_layout.addWidget(QLabel("Scan this code in Ki Companion to pair:"))
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.qr_label.setFixedSize(240, 240)
+        self.qr_label.setStyleSheet("background:#f5f7f8; border-radius:12px;")
+        content_layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.qr_address = QComboBox()
+        self.qr_address.setToolTip("The recommended address follows the PC's active network route.")
+        self.qr_address.currentIndexChanged.connect(self.refresh_qr)
+        content_layout.addWidget(self.qr_address)
         self.addresses_label = QLabel()
         self.addresses_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.addresses_label.setWordWrap(True)
-        layout.addWidget(self.addresses_label)
-        layout.addWidget(QLabel("Scan this code in Ki Companion to pair:"))
-        self.qr_label = QLabel()
-        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr_label.setMinimumSize(220, 220)
-        self.qr_label.setStyleSheet("background:#f5f7f8; border-radius:12px;")
-        layout.addWidget(self.qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.qr_address = QComboBox()
-        self.qr_address.currentTextChanged.connect(self.refresh_qr)
-        layout.addWidget(self.qr_address)
+        content_layout.addWidget(self.addresses_label)
         self.token_label = QLabel()
         self.token_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.token_label.setWordWrap(True)
-        layout.addWidget(self.token_label)
+        content_layout.addWidget(self.token_label)
         warning = QLabel(
             "Security: this local connection uses HTTP, not encryption. Use only on a trusted private "
             "network. The token protects the chat endpoint; disable the bridge when you are finished."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color:#e7b96e;")
-        layout.addWidget(warning)
+        content_layout.addWidget(warning)
         buttons = QHBoxLayout()
         self.toggle_button = QPushButton()
         self.toggle_button.clicked.connect(self.toggle_bridge)
@@ -339,7 +347,9 @@ class PhoneCompanionDialog(QDialog):
                 )
                 self.qr_address.blockSignals(True)
                 self.qr_address.clear()
-                self.qr_address.addItems(address_urls)
+                self.qr_address.addItem(f"Recommended · {address_urls[0]}", address_urls[0])
+                for address_url in address_urls[1:]:
+                    self.qr_address.addItem(address_url, address_url)
                 self.qr_address.blockSignals(False)
                 self.refresh_qr()
             else:
@@ -369,7 +379,7 @@ class PhoneCompanionDialog(QDialog):
         self.refresh_state()
 
     def refresh_qr(self, _address=""):
-        address = self.qr_address.currentText()
+        address = self.qr_address.currentData()
         if not self.bridge.enabled or not address:
             self.qr_label.clear()
             return
@@ -386,8 +396,8 @@ class PhoneCompanionDialog(QDialog):
                 QImage.Format.Format_RGB888,
             ).copy()
             self.qr_label.setPixmap(QPixmap.fromImage(qr_image).scaled(
-                220,
-                220,
+                224,
+                224,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             ))

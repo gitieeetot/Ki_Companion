@@ -35,10 +35,12 @@ def phone_connection_addresses():
             addresses.update(re.findall(r"(?im)^\s*[^:\r\n]*\bIPv4[^:\r\n]*:\s*([\d.]+)", result.stdout))
         except (OSError, subprocess.SubprocessError):
             pass
+    route_address = None
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("192.0.2.1", 9))
-        addresses.add(probe.getsockname()[0])
+        route_address = probe.getsockname()[0]
+        addresses.add(route_address)
     except OSError:
         pass
     finally:
@@ -51,7 +53,11 @@ def phone_connection_addresses():
             continue
         if parsed.version == 4 and (parsed.is_private or parsed.is_link_local) and not parsed.is_loopback:
             usable.append(str(parsed))
-    return sorted(set(usable))
+    ordered = sorted(set(usable))
+    if route_address in ordered:
+        ordered.remove(route_address)
+        ordered.insert(0, route_address)
+    return ordered
 
 
 class PhoneCompanionServer(QObject):
