@@ -57,7 +57,7 @@ jobs:
             echo "All Android signing secrets are required."
             exit 1
           fi
-          android/gradlew --no-daemon -p android :app:assembleRelease \
+          bash android/gradlew --no-daemon -p android :app:assembleRelease \
             "-PappVersionName=${{ steps.version.outputs.name }}" \
             "-PappVersionCode=${{ steps.version.outputs.code }}"
 

@@ -31,11 +31,11 @@ The `.github/workflows/android-release.yml` workflow builds and publishes a sign
 
 Before the first release, create a long-lived Android signing key and back it up securely. Never commit the keystore or its passwords:
 
-    keytool -genkeypair -v -keystore ki-companion-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias ki-companion
+    keytool -genkeypair -v -keystore "$HOME\KiCompanion-release.jks" -storetype JKS -keyalg RSA -keysize 2048 -validity 10000 -alias ki-companion
 
 Add these GitHub repository Actions secrets: `KI_RELEASE_KEYSTORE_BASE64` (the keystore file encoded as one Base64 string), `KI_RELEASE_STORE_PASSWORD`, `KI_RELEASE_KEY_ALIAS`, and `KI_RELEASE_KEY_PASSWORD`. On Windows, copy the Base64 value without writing the key into the repository with:
 
-    [Convert]::ToBase64String([IO.File]::ReadAllBytes("ki-companion-release.jks")) | Set-Clipboard
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\KiCompanion-release.jks")) | Set-Clipboard
 
 Then push an Android version tag to start a release:
 
