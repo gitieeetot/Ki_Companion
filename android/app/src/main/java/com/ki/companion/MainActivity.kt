@@ -15,19 +15,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -70,17 +60,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -97,7 +86,6 @@ import java.net.UnknownHostException
 import java.net.URL
 import java.util.Base64
 import java.util.Locale
-import kotlin.random.Random
 
 private val KiBackground = Color(0xFF17191C)
 private val KiSurface = Color(0xD923282D)
@@ -139,7 +127,7 @@ private fun KiCompanionScreen(context: Context) {
     val busy = remember { mutableStateOf(false) }
     val updateBusy = remember { mutableStateOf(false) }
     val showUpdateDialog = remember { mutableStateOf(false) }
-    val updateStatus = remember { mutableStateOf("Check GitHub for the latest Ki Companion release.") }
+    val updateStatus = remember { mutableStateOf("Check GitHub for the latest Tot release.") }
     val availableUpdate = remember { mutableStateOf<AppUpdate?>(null) }
     val downloadedUpdate = remember { mutableStateOf<java.io.File?>(null) }
     val showSettings = remember { mutableStateOf(false) }
@@ -147,6 +135,10 @@ private fun KiCompanionScreen(context: Context) {
     val voiceDraft = remember { mutableStateOf(false) }
     val voiceOriginalText = remember { mutableStateOf("") }
     val voiceRetrying = remember { mutableStateOf(false) }
+    val floatingTot = remember {
+        mutableStateOf(preferences.getBoolean(TotOverlayService.KEY_ENABLED, false))
+    }
+    val overlayPermission = remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     val voiceInputEnabled = remember { mutableStateOf(preferences.getBoolean("voice_input_enabled", true)) }
     val voiceOutput = remember { mutableStateOf(preferences.getString("voice_output", "both") ?: "both") }
     val ttsReady = remember { mutableStateOf(false) }
@@ -178,6 +170,46 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
+    DisposableEffect(context) {
+        val activity = context as? ComponentActivity
+        if (activity == null) {
+            onDispose {}
+        } else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    floatingTot.value = preferences.getBoolean(TotOverlayService.KEY_ENABLED, false)
+                    overlayPermission.value = Settings.canDrawOverlays(context)
+                }
+            }
+            activity.lifecycle.addObserver(observer)
+            onDispose { activity.lifecycle.removeObserver(observer) }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (preferences.getBoolean(TotOverlayService.KEY_ENABLED, false)) {
+            if (Settings.canDrawOverlays(context)) {
+                try {
+                    TotOverlayService.start(context)
+                } catch (error: IllegalStateException) {
+                    preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+                    floatingTot.value = false
+                    status.value = error.message ?: "Android couldn't restore Tot's floating buddy."
+                    statusIsError.value = true
+                } catch (error: SecurityException) {
+                    preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+                    floatingTot.value = false
+                    status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
+                    statusIsError.value = true
+                }
+            } else {
+                preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+                floatingTot.value = false
+                overlayPermission.value = false
+            }
+        }
+    }
+
     fun submitPrompt(prompt: String, selectedAttachment: TextAttachment? = null) {
         if (prompt.isBlank() || busy.value) return
         val chatMessages = messages.toList() + ChatMessage("user", prompt)
@@ -187,7 +219,7 @@ private fun KiCompanionScreen(context: Context) {
         attachment.value = null
         voiceDraft.value = false
         messages.add(ChatMessage("user", prompt))
-        status.value = "Tot is thinking…"
+        status.value = "Ki is thinking…"
         statusIsError.value = false
         busy.value = true
         scope.launch {
@@ -202,16 +234,16 @@ private fun KiCompanionScreen(context: Context) {
                     )
                 }
                 messages.add(ChatMessage("assistant", answer))
-                status.value = "Tot replied"
+                status.value = "Ki replied"
                 if (selectedOutput in setOf("phone", "both")) {
                     if (ttsReady.value) {
                         val result = phoneTts.speak(answer, TextToSpeech.QUEUE_FLUSH, null, "ki-reply")
                         if (result == TextToSpeech.ERROR) {
-                            status.value = "Tot replied, but phone speech could not start."
+                            status.value = "Ki replied, but phone speech could not start."
                             statusIsError.value = true
                         }
                     } else {
-                        status.value = "Tot replied, but phone speech is not ready."
+                        status.value = "Ki replied, but phone speech is not ready."
                         statusIsError.value = true
                     }
                 }
@@ -308,7 +340,30 @@ private fun KiCompanionScreen(context: Context) {
         if (apk != null && context.packageManager.canRequestPackageInstalls()) {
             openUpdateInstaller(context, apk) { updateStatus.value = it }
         } else if (apk != null) {
-            updateStatus.value = "Allow Ki&Tot to install unknown apps, then tap Install update again."
+            updateStatus.value = "Allow Tot to install unknown apps, then tap Install update again."
+        }
+    }
+
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        overlayPermission.value = Settings.canDrawOverlays(context)
+        if (overlayPermission.value) {
+            try {
+                TotOverlayService.start(context)
+                floatingTot.value = true
+                preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, true).apply()
+                status.value = "Tot is floating. Drag him anywhere and tap for a hello."
+                statusIsError.value = false
+            } catch (error: IllegalStateException) {
+                floatingTot.value = false
+                status.value = error.message ?: "Android couldn't start Tot's floating buddy."
+                statusIsError.value = true
+            } catch (error: SecurityException) {
+                floatingTot.value = false
+                status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
+                statusIsError.value = true
+            }
         }
     }
 
@@ -351,19 +406,19 @@ private fun KiCompanionScreen(context: Context) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("Ki & Tot", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Text("Tot", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
             }
             TextButton(onClick = { showSettings.value = true }) {
                 Text("Settings", color = KiAccent, fontWeight = FontWeight.SemiBold)
             }
         }
 
-        KiTravelCard(
+        ConnectionStatusCard(
             status = status.value,
             isError = statusIsError.value,
             isThinking = busy.value,
             onClick = {
-                status.value = if (busy.value) "Tot is thinking about your message…" else "We're here with you."
+                status.value = if (busy.value) "Ki is thinking about your message…" else "Tot is here with you."
                 statusIsError.value = false
             },
         )
@@ -564,6 +619,58 @@ private fun KiCompanionScreen(context: Context) {
                             }
                         },
                     )
+                    Text("TOT EVERYWHERE", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Floating Tot", color = KiText, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (overlayPermission.value) {
+                                    "Tot can float over other apps. Android shows a notification while Tot is active."
+                                } else {
+                                    "Allow display over other apps to let Tot follow you outside this app."
+                                },
+                                color = KiMuted,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Switch(
+                            checked = floatingTot.value,
+                            onCheckedChange = { enabled ->
+                                if (!enabled) {
+                                    TotOverlayService.stop(context)
+                                    floatingTot.value = false
+                                    preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+                                } else if (Settings.canDrawOverlays(context)) {
+                                    try {
+                                        TotOverlayService.start(context)
+                                        floatingTot.value = true
+                                        preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, true).apply()
+                                        status.value = "Tot is floating. Drag him anywhere and tap for a hello."
+                                        statusIsError.value = false
+                                    } catch (error: IllegalStateException) {
+                                        floatingTot.value = false
+                                        status.value = error.message ?: "Android couldn't start Tot's floating buddy."
+                                        statusIsError.value = true
+                                    } catch (error: SecurityException) {
+                                        floatingTot.value = false
+                                        status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
+                                        statusIsError.value = true
+                                    }
+                                } else {
+                                    overlayPermissionLauncher.launch(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}"),
+                                        ),
+                                    )
+                                }
+                            },
+                        )
+                    }
                     Text("VOICE INPUT", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -637,7 +744,7 @@ private fun KiCompanionScreen(context: Context) {
         AlertDialog(
             onDismissRequest = { if (!updateBusy.value) showUpdateDialog.value = false },
             containerColor = KiSurface,
-            title = { Text("Ki&Tot updates", color = KiText) },
+            title = { Text("Tot updates", color = KiText) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Installed version ${BuildConfig.VERSION_NAME}", color = KiMuted)
@@ -670,7 +777,7 @@ private fun KiCompanionScreen(context: Context) {
                             if (context.packageManager.canRequestPackageInstalls()) {
                                 openUpdateInstaller(context, apk) { updateStatus.value = it }
                             } else {
-                                updateStatus.value = "Allow Ki&Tot to install unknown apps in Android settings."
+                                updateStatus.value = "Allow Tot to install unknown apps in Android settings."
                                 installPermissionLauncher.launch(
                                     Intent(
                                         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -749,198 +856,34 @@ private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (S
     } catch (error: ActivityNotFoundException) {
         onError("Android could not open the package installer.")
     } catch (error: SecurityException) {
-        onError("Android blocked the installer. Allow Ki&Tot to install unknown apps and try again.")
+        onError("Android blocked the installer. Allow Tot to install unknown apps and try again.")
     } catch (error: IllegalArgumentException) {
         onError("The update APK could not be opened. Check for updates and download it again.")
     }
 }
 
 @Composable
-private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, onClick: () -> Unit) {
+private fun ConnectionStatusCard(status: String, isError: Boolean, isThinking: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(116.dp),
-        shape = RoundedCornerShape(22.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = KiSurface),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val travel = remember { Animatable(0.02f) }
-            val bob = rememberInfiniteTransition(label = "tot-bob")
-                .animateFloat(
-                    initialValue = -2f,
-                    targetValue = 2f,
-                    animationSpec = infiniteRepeatable(tween(420), RepeatMode.Reverse),
-                    label = "bob",
-                )
-            LaunchedEffect(Unit) {
-                while (true) {
-                    delay(Random.nextLong(500, 1400))
-                    travel.animateTo(
-                        targetValue = Random.nextFloat() * 0.68f + 0.24f,
-                        animationSpec = tween(
-                            durationMillis = Random.nextInt(1500, 2800),
-                            easing = FastOutSlowInEasing,
-                        ),
-                    )
-                    delay(Random.nextLong(350, 900))
-                    travel.animateTo(
-                        targetValue = Random.nextFloat() * 0.68f + 0.02f,
-                        animationSpec = tween(
-                            durationMillis = Random.nextInt(1500, 2800),
-                            easing = FastOutSlowInEasing,
-                        ),
-                    )
-                }
-            }
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val unit = density
-                val faceWidth = 36f * unit
-                val faceHeight = 40f * unit
-                val x = size.width - faceWidth - 20f * unit + (travel.value - 0.5f) * 12f * unit
-                val baseY = size.height - faceHeight - 24f * unit + bob.value * unit
-                drawRoundRect(
-                    color = KiAccent.copy(alpha = 0.12f),
-                    topLeft = androidx.compose.ui.geometry.Offset(x - 6f * unit, baseY - 6f * unit),
-                    size = androidx.compose.ui.geometry.Size(faceWidth + 12f * unit, faceHeight + 12f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(15f * unit),
-                )
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x, baseY),
-                    size = androidx.compose.ui.geometry.Size(faceWidth, faceHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(13f * unit),
-                )
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 6f * unit, baseY - 9f * unit),
-                    size = androidx.compose.ui.geometry.Size(4f * unit, 10f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f * unit),
-                )
-                drawCircle(
-                    color = KiAccent,
-                    radius = 2.5f * unit,
-                    center = androidx.compose.ui.geometry.Offset(x + 8f * unit, baseY - 10f * unit),
-                )
-                drawRoundRect(
-                    color = KiAccentSoft,
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 4f * unit, baseY + 5f * unit),
-                    size = androidx.compose.ui.geometry.Size(faceWidth - 8f * unit, faceHeight - 13f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f * unit),
-                )
-                val eyesY = baseY + 18f * unit
-                drawCircle(Color(0xFF17242C), radius = 2.3f * unit, center = androidx.compose.ui.geometry.Offset(x + 13f * unit, eyesY))
-                drawCircle(Color(0xFF17242C), radius = 2.3f * unit, center = androidx.compose.ui.geometry.Offset(x + 23f * unit, eyesY))
-                val mouth = Path().apply {
-                    moveTo(x + 15f * unit, baseY + 27f * unit)
-                    quadraticTo(x + 18f * unit, baseY + 30f * unit, x + 21f * unit, baseY + 27f * unit)
-                }
-                drawPath(mouth, color = Color(0xFF17242C), style = Stroke(width = 1.4f * unit))
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x - 4f * unit, baseY + 22f * unit),
-                    size = androidx.compose.ui.geometry.Size(5f * unit, 12f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
-                )
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + faceWidth - unit, baseY + 22f * unit),
-                    size = androidx.compose.ui.geometry.Size(5f * unit, 12f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
-                )
-                val footOffset = if (isThinking) 0f else bob.value * unit
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 6f * unit, baseY + faceHeight - 1f * unit + footOffset),
-                    size = androidx.compose.ui.geometry.Size(10f * unit, 6f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
-                )
-                drawRoundRect(
-                    color = Color(0xFF30383F),
-                    topLeft = androidx.compose.ui.geometry.Offset(x + 21f * unit, baseY + faceHeight - 1f * unit - footOffset),
-                    size = androidx.compose.ui.geometry.Size(10f * unit, 6f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
-                )
-                val totBob = kotlin.math.sin(System.currentTimeMillis() / 260.0).toFloat() * 1.8f * unit
-                val totWidth = 27f * unit
-                val totHeight = 30f * unit
-                val totX = x - totWidth - 5f * unit
-                val totY = baseY + 8f * unit + totBob
-                val totBody = Color(0xFF49445C)
-                val totFace = Color(0xFFD8CFFF)
-                drawRoundRect(
-                    color = Color(0xFFC6A9FF).copy(alpha = 0.16f),
-                    topLeft = androidx.compose.ui.geometry.Offset(totX - 4f * unit, totY - 4f * unit),
-                    size = androidx.compose.ui.geometry.Size(totWidth + 8f * unit, totHeight + 8f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(11f * unit),
-                )
-                drawRoundRect(
-                    color = totBody,
-                    topLeft = androidx.compose.ui.geometry.Offset(totX, totY),
-                    size = androidx.compose.ui.geometry.Size(totWidth, totHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(9f * unit),
-                )
-                drawRoundRect(
-                    color = totFace,
-                    topLeft = androidx.compose.ui.geometry.Offset(totX + 3f * unit, totY + 5f * unit),
-                    size = androidx.compose.ui.geometry.Size(totWidth - 6f * unit, 18f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * unit),
-                )
-                drawRoundRect(
-                    color = totBody,
-                    topLeft = androidx.compose.ui.geometry.Offset(totX + 8f * unit, totY - 5f * unit),
-                    size = androidx.compose.ui.geometry.Size(3f * unit, 6f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f * unit),
-                )
-                drawCircle(
-                    color = Color(0xFFC6A9FF),
-                    radius = 2f * unit,
-                    center = androidx.compose.ui.geometry.Offset(totX + 9.5f * unit, totY - 6f * unit),
-                )
-                drawCircle(Color(0xFF292536), radius = 1.8f * unit, center = androidx.compose.ui.geometry.Offset(totX + 9f * unit, totY + 12f * unit))
-                drawCircle(Color(0xFF292536), radius = 1.8f * unit, center = androidx.compose.ui.geometry.Offset(totX + 18f * unit, totY + 12f * unit))
-                val totMouth = Path().apply {
-                    moveTo(totX + 11f * unit, totY + 17f * unit)
-                    quadraticTo(totX + 13.5f * unit, totY + 19f * unit, totX + 16f * unit, totY + 17f * unit)
-                }
-                drawPath(totMouth, color = Color(0xFF292536), style = Stroke(width = 1.2f * unit))
-                drawRoundRect(
-                    color = totBody,
-                    topLeft = androidx.compose.ui.geometry.Offset(totX + 4f * unit, totY + 27f * unit + totBob),
-                    size = androidx.compose.ui.geometry.Size(8f * unit, 5f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.5f * unit),
-                )
-                drawRoundRect(
-                    color = totBody,
-                    topLeft = androidx.compose.ui.geometry.Offset(totX + 16f * unit, totY + 27f * unit - totBob),
-                    size = androidx.compose.ui.geometry.Size(8f * unit, 5f * unit),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.5f * unit),
-                )
-            }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 16.dp, top = 13.dp, end = 82.dp),
-            ) {
-                Text("KI & TOT ARE WITH YOU", color = KiAccent, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    status,
-                    color = if (isError) KiError else KiText,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                )
-                if (!isError) {
-                    Text(
-                        if (isThinking) "Thinking…" else "Tap us for a little hello",
-                        color = KiMuted,
-                        fontSize = 11.sp,
-                    )
-                }
-            }
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text("KI ON YOUR WINDOWS PC", color = KiAccent, fontSize = 10.sp, letterSpacing = 1.3.sp, fontWeight = FontWeight.Bold)
+            Text(
+                status,
+                color = if (isError) KiError else KiText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+            )
+            if (isThinking) Text("Ki is thinking…", color = KiMuted, fontSize = 11.sp)
         }
     }
 }
@@ -1065,7 +1008,7 @@ private fun MessageBubble(message: ChatMessage) {
                 .padding(horizontal = 13.dp, vertical = 10.dp),
         ) {
             Text(
-                if (isUser) "YOU" else "TOT",
+                if (isUser) "YOU" else "KI",
                 color = if (isUser) KiAccent else KiMuted,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
