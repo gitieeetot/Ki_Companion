@@ -328,6 +328,7 @@ class ChatWindow(QDialog):
         self.request_has_project_context = False
         self.voice_worker = None
         self.speech_worker = None
+        self.phone_reply_queue = []
         self.streaming_bubble = None
         self.streaming_answer = ""
         self.streamed_response_received = False
@@ -461,6 +462,14 @@ class ChatWindow(QDialog):
         worker.finished.connect(self.speech_finished)
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def speak_phone_reply(self, text):
+        if not text.strip():
+            return
+        if self.speech_worker is not None and self.speech_worker.isRunning():
+            self.phone_reply_queue.append(text)
+            return
+        self.start_speech_worker(self.make_speech_worker(text))
 
     def preview_selected_voice(self):
         if self.speech_worker is not None and self.speech_worker.isRunning():
@@ -1458,13 +1467,19 @@ class ChatWindow(QDialog):
 
     def speech_finished(self):
         finished_worker = self.sender()
+        finished_speech_worker = finished_worker is self.speech_worker
         if finished_worker is self.streaming_speech_worker:
             self.streaming_speech_worker = None
-        if finished_worker is self.speech_worker:
+        if finished_speech_worker:
             self.speech_worker = None
         if self.voice_worker is None:
             self.set_robot_state("thinking" if self.worker is not None else "idle")
         self.voice_button.setEnabled(self.worker is None and self.voice_worker is None)
+        if (
+            finished_speech_worker
+            and self.phone_reply_queue
+        ):
+            self.start_speech_worker(self.make_speech_worker(self.phone_reply_queue.pop(0)))
 
     def show_local_error(self, message):
         self.react_robot("concerned", 2.4)

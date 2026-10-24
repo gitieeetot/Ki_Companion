@@ -54,10 +54,13 @@ def phone_connection_addresses():
     return sorted(set(usable))
 
 
-class PhoneCompanionServer:
+class PhoneCompanionServer(QObject):
     """Opt-in, token-protected LAN bridge limited to chat and text attachments."""
 
+    speak_requested = Signal(str)
+
     def __init__(self):
+        super().__init__()
         self._servers = []
         self._threads = []
         self._token = ""
@@ -175,6 +178,8 @@ class PhoneCompanionServer:
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
                     self._send_json(502, {"error": str(error)})
                     return
+                if payload.get("speak_on_pc") is True:
+                    bridge.speak_requested.emit(answer)
                 self._send_json(200, {"answer": answer})
 
             def log_message(self, format, *args):

@@ -1,5 +1,7 @@
 package com.ki.companion
 
+import android.Manifest
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -7,6 +9,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -30,6 +34,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,6 +44,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -46,10 +53,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +96,7 @@ import java.net.URISyntaxException
 import java.net.UnknownHostException
 import java.net.URL
 import java.util.Base64
+import java.util.Locale
 import kotlin.random.Random
 
 private val KiBackground = Color(0xFF17191C)
@@ -103,7 +114,7 @@ private data class TextAttachment(val name: String, val contentBase64: String)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = android.graphics.Color.rgb(23, 25, 28)
+        window.statusBarColor = android.graphics.Color.rgb(34, 42, 49)
         window.navigationBarColor = android.graphics.Color.rgb(23, 25, 28)
         setContent {
             MaterialTheme {
@@ -131,12 +142,135 @@ private fun KiCompanionScreen(context: Context) {
     val updateStatus = remember { mutableStateOf("Check GitHub for the latest Ki Companion release.") }
     val availableUpdate = remember { mutableStateOf<AppUpdate?>(null) }
     val downloadedUpdate = remember { mutableStateOf<java.io.File?>(null) }
-    val showConnection = remember { mutableStateOf(host.value.isBlank() || token.value.isBlank()) }
+    val showSettings = remember { mutableStateOf(false) }
     val showPairingHelp = remember { mutableStateOf(false) }
+    val voiceInputEnabled = remember { mutableStateOf(preferences.getBoolean("voice_input_enabled", true)) }
+    val voiceOutput = remember { mutableStateOf(preferences.getString("voice_output", "both") ?: "both") }
+    val ttsReady = remember { mutableStateOf(false) }
     val attachment = remember { mutableStateOf<TextAttachment?>(null) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val phoneTts = remember(context) {
+        TextToSpeech(context) { result ->
+            ttsReady.value = result == TextToSpeech.SUCCESS
+        }
+    }
+
+    LaunchedEffect(ttsReady.value) {
+        if (ttsReady.value) {
+            val result = phoneTts.setLanguage(Locale.getDefault())
+            if (result == TextToSpeech.LANG_MISSING_DATA ||
+                result == TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                ttsReady.value = false
+            }
+        }
+    }
+
+    DisposableEffect(phoneTts) {
+        onDispose {
+            phoneTts.stop()
+            phoneTts.shutdown()
+        }
+    }
+
+    fun submitPrompt(prompt: String, selectedAttachment: TextAttachment? = null) {
+        if (prompt.isBlank() || busy.value) return
+        val chatMessages = messages.toList() + ChatMessage("user", prompt)
+        val selectedOutput = voiceOutput.value
+        input.value = ""
+        attachment.value = null
+        messages.add(ChatMessage("user", prompt))
+        status.value = "Ki is thinking…"
+        statusIsError.value = false
+        busy.value = true
+        scope.launch {
+            try {
+                val answer = withContext(Dispatchers.IO) {
+                    sendChat(
+                        host.value,
+                        token.value,
+                        chatMessages,
+                        selectedAttachment,
+                        selectedOutput in setOf("pc", "both"),
+                    )
+                }
+                messages.add(ChatMessage("assistant", answer))
+                status.value = "Ki replied"
+                if (selectedOutput in setOf("phone", "both")) {
+                    if (ttsReady.value) {
+                        val result = phoneTts.speak(answer, TextToSpeech.QUEUE_FLUSH, null, "ki-reply")
+                        if (result == TextToSpeech.ERROR) {
+                            status.value = "Ki replied, but phone speech could not start."
+                            statusIsError.value = true
+                        }
+                    } else {
+                        status.value = "Ki replied, but phone speech is not ready."
+                        statusIsError.value = true
+                    }
+                }
+            } catch (error: Exception) {
+                messages.removeAt(messages.lastIndex)
+                input.value = prompt
+                attachment.value = selectedAttachment
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                busy.value = false
+            }
+        }
+    }
+
+    val speechRecognitionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spokenText = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                .orEmpty()
+            if (spokenText.isNotBlank()) {
+                input.value = spokenText
+                status.value = "Heard you. Sending to Ki…"
+                statusIsError.value = false
+                submitPrompt(spokenText, attachment.value)
+            } else {
+                status.value = "I didn't catch that. Tap the microphone and try again."
+                statusIsError.value = false
+            }
+        }
+    }
+
+    fun startSpeechRecognition() {
+        if (!voiceInputEnabled.value || busy.value) return
+        try {
+            speechRecognitionLauncher.launch(
+                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Talk to Ki")
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                },
+            )
+        } catch (error: ActivityNotFoundException) {
+            status.value = "Speech recognition is unavailable on this phone. Install or enable a speech service."
+            statusIsError.value = true
+        } catch (error: SecurityException) {
+            status.value = "Android did not allow microphone access."
+            statusIsError.value = true
+        }
+    }
+
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startSpeechRecognition()
+        else {
+            status.value = "Allow microphone access in Android settings to talk to Ki."
+            statusIsError.value = true
+        }
+    }
 
     val qrScanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         val contents = result.contents ?: return@rememberLauncherForActivityResult
@@ -145,7 +279,6 @@ private fun KiCompanionScreen(context: Context) {
             host.value = pairing.first
             token.value = pairing.second
             preferences.edit().putString("host", host.value).putString("token", token.value).apply()
-            showConnection.value = true
             status.value = "QR scanned. Tap Test connection to finish pairing."
             statusIsError.value = false
         } catch (error: IOException) {
@@ -204,16 +337,10 @@ private fun KiCompanionScreen(context: Context) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("KI  ·  COMPANION", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
                 Text("Your little buddy", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { showUpdateDialog.value = true }) {
-                    Text("Updates", color = KiAccent)
-                }
-                TextButton(onClick = { showPairingHelp.value = true }) {
-                    Text("Pairing help", color = KiAccent)
-                }
+            TextButton(onClick = { showSettings.value = true }) {
+                Text("Settings", color = KiAccent, fontWeight = FontWeight.SemiBold)
             }
         }
 
@@ -227,51 +354,28 @@ private fun KiCompanionScreen(context: Context) {
             },
         )
 
-        if (showConnection.value) {
-            ConnectionCard(
-                host = host.value,
-                token = token.value,
-                onHostChange = {
-                    host.value = it
-                    preferences.edit().putString("host", it).apply()
-                },
-                onTokenChange = {
-                    token.value = it
-                    preferences.edit().putString("token", it).apply()
-                },
-                busy = busy.value,
-                onScan = {
-                    qrScanner.launch(
-                        ScanOptions()
-                            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                            .setPrompt("Scan the QR code from Ki on your PC")
-                            .setBeepEnabled(false),
-                    )
-                },
-                onTest = {
-                    scope.launch {
-                        busy.value = true
-                        status.value = "Checking PC and Ollama…"
-                        statusIsError.value = false
-                        try {
-                            val message = withContext(Dispatchers.IO) { checkConnection(host.value, token.value) }
-                            status.value = message
-                            showConnection.value = false
-                        } catch (error: Exception) {
-                            status.value = describeNetworkError(error)
-                            statusIsError.value = true
-                        } finally {
-                            busy.value = false
-                        }
-                    }
-                },
-            )
-        } else {
-            TextButton(
-                onClick = { showConnection.value = true },
-                modifier = Modifier.align(Alignment.Start),
+        Card(
+            onClick = { showSettings.value = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = KiSurface),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("PC connection  ·  Change", color = KiMuted)
+                Column {
+                    Text("PC connection", color = KiText, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (host.value.isBlank()) "Pair your Windows PC in Settings" else status.value,
+                        color = if (statusIsError.value) KiError else KiMuted,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                    )
+                }
+                Text("Settings  ›", color = KiAccent, fontSize = 12.sp)
             }
         }
 
@@ -320,6 +424,22 @@ private fun KiCompanionScreen(context: Context) {
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (voiceInputEnabled.value) {
+                TextButton(
+                    enabled = !busy.value,
+                    onClick = {
+                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED
+                        ) {
+                            startSpeechRecognition()
+                        } else {
+                            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                ) {
+                    Text("Mic", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                }
+            }
             OutlinedTextField(
                 value = input.value,
                 onValueChange = { input.value = it },
@@ -336,33 +456,7 @@ private fun KiCompanionScreen(context: Context) {
                 ) { Text("＋", color = KiAccent, fontSize = 23.sp) }
                 Button(
                     enabled = !busy.value && input.value.isNotBlank(),
-                    onClick = {
-                        val prompt = input.value.trim()
-                        input.value = ""
-                        val selectedAttachment = attachment.value
-                        attachment.value = null
-                        messages.add(ChatMessage("user", prompt))
-                        status.value = "Ki is thinking…"
-                        statusIsError.value = false
-                        busy.value = true
-                        scope.launch {
-                            try {
-                                val answer = withContext(Dispatchers.IO) {
-                                    sendChat(host.value, token.value, messages.toList(), selectedAttachment)
-                                }
-                                messages.add(ChatMessage("assistant", answer))
-                                status.value = "Ki replied"
-                            } catch (error: Exception) {
-                                messages.removeAt(messages.lastIndex)
-                                input.value = prompt
-                                attachment.value = selectedAttachment
-                                status.value = describeNetworkError(error)
-                                statusIsError.value = true
-                            } finally {
-                                busy.value = false
-                            }
-                        }
-                    },
+                    onClick = { submitPrompt(input.value.trim(), attachment.value) },
                     shape = CircleShape,
                     contentPadding = ButtonDefaults.ContentPadding,
                     colors = ButtonDefaults.buttonColors(
@@ -401,6 +495,124 @@ private fun KiCompanionScreen(context: Context) {
             confirmButton = {
                 TextButton(onClick = { showPairingHelp.value = false }) {
                     Text("Got it", color = KiAccent)
+                }
+            },
+        )
+    }
+
+    if (showSettings.value) {
+        AlertDialog(
+            onDismissRequest = { showSettings.value = false },
+            containerColor = KiSurface,
+            title = { Text("Settings", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("PC CONNECTION", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    ConnectionCard(
+                        host = host.value,
+                        token = token.value,
+                        onHostChange = {
+                            host.value = it
+                            preferences.edit().putString("host", it).apply()
+                        },
+                        onTokenChange = {
+                            token.value = it
+                            preferences.edit().putString("token", it).apply()
+                        },
+                        busy = busy.value,
+                        onScan = {
+                            qrScanner.launch(
+                                ScanOptions()
+                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    .setPrompt("Scan the QR code from Ki on your PC")
+                                    .setBeepEnabled(false),
+                            )
+                        },
+                        onTest = {
+                            scope.launch {
+                                busy.value = true
+                                status.value = "Checking PC and Ollama…"
+                                statusIsError.value = false
+                                try {
+                                    status.value = withContext(Dispatchers.IO) {
+                                        checkConnection(host.value, token.value)
+                                    }
+                                } catch (error: Exception) {
+                                    status.value = describeNetworkError(error)
+                                    statusIsError.value = true
+                                } finally {
+                                    busy.value = false
+                                }
+                            }
+                        },
+                    )
+                    Text("VOICE INPUT", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Talk to Ki", color = KiText, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Uses Android's speech service. Audio may be processed by your phone's speech provider.",
+                                color = KiMuted,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Switch(
+                            checked = voiceInputEnabled.value,
+                            onCheckedChange = {
+                                voiceInputEnabled.value = it
+                                preferences.edit().putBoolean("voice_input_enabled", it).apply()
+                            },
+                        )
+                    }
+                    Text("SPEAK REPLIES", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    listOf(
+                        "both" to "Phone and Windows PC",
+                        "phone" to "Phone only",
+                        "pc" to "Windows PC only",
+                        "off" to "Text only",
+                    ).forEach { (value, title) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = voiceOutput.value == value,
+                                onClick = {
+                                    voiceOutput.value = value
+                                    preferences.edit().putString("voice_output", value).apply()
+                                },
+                                colors = androidx.compose.material3.RadioButtonDefaults.colors(
+                                    selectedColor = KiAccent,
+                                ),
+                            )
+                            Text(title, color = KiText, fontSize = 14.sp)
+                        }
+                    }
+                    Text(
+                        "Phone replies use Android text-to-speech. PC replies use Ki's selected Windows voice.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                    )
+                    TextButton(onClick = {
+                        showSettings.value = false
+                        showPairingHelp.value = true
+                    }) { Text("Pairing help", color = KiAccent) }
+                    TextButton(onClick = {
+                        showSettings.value = false
+                        showUpdateDialog.value = true
+                    }) { Text("Check for app updates", color = KiAccent) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettings.value = false }) {
+                    Text("Done", color = KiAccent)
                 }
             },
         )
@@ -878,8 +1090,10 @@ private fun sendChat(
     token: String,
     messages: List<ChatMessage>,
     attachment: TextAttachment?,
+    speakOnPc: Boolean,
 ): String {
     val body = JSONObject().apply {
+        put("speak_on_pc", speakOnPc)
         put("messages", JSONArray().also { array ->
             messages.takeLast(20).forEach { message ->
                 array.put(JSONObject().put("role", message.role).put("content", message.content))

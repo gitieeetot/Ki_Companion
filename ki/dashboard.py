@@ -280,7 +280,8 @@ class PhoneCompanionDialog(QDialog):
         layout.addWidget(title)
         explanation = QLabel(
             "Keep Ki and your phone on the same Wi-Fi/hotspot, or connect using USB tethering. "
-            "Enter one of the addresses and the pairing token in the Android app. If Windows asks, allow access "
+            "Open Settings → PC connection in Ki Companion and scan the QR code below. Choose the PC network address "
+            "that matches your phone. If Windows asks, allow access "
             "on private networks only."
         )
         explanation.setWordWrap(True)
