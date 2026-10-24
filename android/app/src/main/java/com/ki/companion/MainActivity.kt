@@ -133,7 +133,7 @@ private fun KiCompanionScreen(context: Context) {
     val token = remember { mutableStateOf(preferences.getString("token", "") ?: "") }
     val input = remember { mutableStateOf("") }
     val status = remember {
-        mutableStateOf(if (host.value.isBlank()) "Set up a connection to your PC" else "Ready to connect to Ki")
+        mutableStateOf(if (host.value.isBlank()) "Set up a connection to your PC" else "Ready to chat with Ki on your PC")
     }
     val statusIsError = remember { mutableStateOf(false) }
     val busy = remember { mutableStateOf(false) }
@@ -144,6 +144,9 @@ private fun KiCompanionScreen(context: Context) {
     val downloadedUpdate = remember { mutableStateOf<java.io.File?>(null) }
     val showSettings = remember { mutableStateOf(false) }
     val showPairingHelp = remember { mutableStateOf(false) }
+    val voiceDraft = remember { mutableStateOf(false) }
+    val voiceOriginalText = remember { mutableStateOf("") }
+    val voiceRetrying = remember { mutableStateOf(false) }
     val voiceInputEnabled = remember { mutableStateOf(preferences.getBoolean("voice_input_enabled", true)) }
     val voiceOutput = remember { mutableStateOf(preferences.getString("voice_output", "both") ?: "both") }
     val ttsReady = remember { mutableStateOf(false) }
@@ -179,10 +182,12 @@ private fun KiCompanionScreen(context: Context) {
         if (prompt.isBlank() || busy.value) return
         val chatMessages = messages.toList() + ChatMessage("user", prompt)
         val selectedOutput = voiceOutput.value
+        val wasVoiceDraft = voiceDraft.value
         input.value = ""
         attachment.value = null
+        voiceDraft.value = false
         messages.add(ChatMessage("user", prompt))
-        status.value = "Ki is thinking…"
+        status.value = "Tot is thinking…"
         statusIsError.value = false
         busy.value = true
         scope.launch {
@@ -197,16 +202,16 @@ private fun KiCompanionScreen(context: Context) {
                     )
                 }
                 messages.add(ChatMessage("assistant", answer))
-                status.value = "Ki replied"
+                status.value = "Tot replied"
                 if (selectedOutput in setOf("phone", "both")) {
                     if (ttsReady.value) {
                         val result = phoneTts.speak(answer, TextToSpeech.QUEUE_FLUSH, null, "ki-reply")
                         if (result == TextToSpeech.ERROR) {
-                            status.value = "Ki replied, but phone speech could not start."
+                            status.value = "Tot replied, but phone speech could not start."
                             statusIsError.value = true
                         }
                     } else {
-                        status.value = "Ki replied, but phone speech is not ready."
+                        status.value = "Tot replied, but phone speech is not ready."
                         statusIsError.value = true
                     }
                 }
@@ -214,6 +219,7 @@ private fun KiCompanionScreen(context: Context) {
                 messages.removeAt(messages.lastIndex)
                 input.value = prompt
                 attachment.value = selectedAttachment
+                voiceDraft.value = wasVoiceDraft
                 status.value = describeNetworkError(error)
                 statusIsError.value = true
             } finally {
@@ -232,24 +238,32 @@ private fun KiCompanionScreen(context: Context) {
                 .orEmpty()
             if (spokenText.isNotBlank()) {
                 input.value = spokenText
-                status.value = "Heard you. Sending to Ki…"
+                voiceDraft.value = true
+                voiceRetrying.value = false
+                status.value = "Transcript ready. Review it before sending."
                 statusIsError.value = false
-                submitPrompt(spokenText, attachment.value)
             } else {
-                status.value = "I didn't catch that. Tap the microphone and try again."
+                voiceDraft.value = voiceRetrying.value
+                voiceRetrying.value = false
+                status.value = "I didn't catch that. Retry the microphone or type your message."
                 statusIsError.value = false
             }
+        } else {
+            status.value = "Voice input canceled. Nothing was sent."
+            statusIsError.value = false
         }
     }
 
     fun startSpeechRecognition() {
         if (!voiceInputEnabled.value || busy.value) return
         try {
+            voiceRetrying.value = voiceDraft.value
+            if (!voiceDraft.value) voiceOriginalText.value = input.value
             speechRecognitionLauncher.launch(
                 Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Talk to Ki")
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Talk to Tot")
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 },
             )
@@ -267,7 +281,7 @@ private fun KiCompanionScreen(context: Context) {
     ) { granted ->
         if (granted) startSpeechRecognition()
         else {
-            status.value = "Allow microphone access in Android settings to talk to Ki."
+            status.value = "Allow microphone access in Android settings to talk to Tot."
             statusIsError.value = true
         }
     }
@@ -294,7 +308,7 @@ private fun KiCompanionScreen(context: Context) {
         if (apk != null && context.packageManager.canRequestPackageInstalls()) {
             openUpdateInstaller(context, apk) { updateStatus.value = it }
         } else if (apk != null) {
-            updateStatus.value = "Allow Ki Companion to install unknown apps, then tap Install update again."
+            updateStatus.value = "Allow Ki&Tot to install unknown apps, then tap Install update again."
         }
     }
 
@@ -337,7 +351,7 @@ private fun KiCompanionScreen(context: Context) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("Your little buddy", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                Text("Ki & Tot", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
             }
             TextButton(onClick = { showSettings.value = true }) {
                 Text("Settings", color = KiAccent, fontWeight = FontWeight.SemiBold)
@@ -349,7 +363,7 @@ private fun KiCompanionScreen(context: Context) {
             isError = statusIsError.value,
             isThinking = busy.value,
             onClick = {
-                status.value = if (busy.value) "Ki is thinking about your message…" else "I'm here with you."
+                status.value = if (busy.value) "Tot is thinking about your message…" else "We're here with you."
                 statusIsError.value = false
             },
         )
@@ -418,7 +432,7 @@ private fun KiCompanionScreen(context: Context) {
             OutlinedTextField(
                 value = input.value,
                 onValueChange = { input.value = it },
-                placeholder = { Text("Message Ki…", color = KiMuted) },
+                placeholder = { Text("Message Tot…", color = KiMuted) },
                 modifier = Modifier.weight(1f),
                 maxLines = 4,
                 shape = RoundedCornerShape(20.dp),
@@ -445,8 +459,34 @@ private fun KiCompanionScreen(context: Context) {
                 }
             }
         }
+        if (voiceDraft.value) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Review transcript", color = KiMuted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                TextButton(
+                    enabled = !busy.value,
+                    onClick = { startSpeechRecognition() },
+                ) { Text("Retry", color = KiAccent) }
+                TextButton(
+                    enabled = !busy.value,
+                    onClick = {
+                        input.value = voiceOriginalText.value
+                        voiceDraft.value = false
+                        status.value = "Voice message canceled. Nothing was sent."
+                        statusIsError.value = false
+                    },
+                ) { Text("Cancel", color = KiMuted) }
+                TextButton(
+                    enabled = !busy.value && input.value.isNotBlank(),
+                    onClick = { submitPrompt(input.value.trim(), attachment.value) },
+                ) { Text("Send", color = KiAccent, fontWeight = FontWeight.SemiBold) }
+            }
+        }
         Text(
-            "Your messages go to Ki on your PC over your local network.",
+            "Tot chats with Ki on your PC over your local network.",
             color = KiMuted,
             fontSize = 11.sp,
             modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -531,7 +571,7 @@ private fun KiCompanionScreen(context: Context) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Talk to Ki", color = KiText, fontWeight = FontWeight.SemiBold)
+                            Text("Talk to Tot", color = KiText, fontWeight = FontWeight.SemiBold)
                             Text(
                                 "Uses Android's speech service. Audio may be processed by your phone's speech provider.",
                                 color = KiMuted,
@@ -597,7 +637,7 @@ private fun KiCompanionScreen(context: Context) {
         AlertDialog(
             onDismissRequest = { if (!updateBusy.value) showUpdateDialog.value = false },
             containerColor = KiSurface,
-            title = { Text("Ki Companion updates", color = KiText) },
+            title = { Text("Ki&Tot updates", color = KiText) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Installed version ${BuildConfig.VERSION_NAME}", color = KiMuted)
@@ -630,7 +670,7 @@ private fun KiCompanionScreen(context: Context) {
                             if (context.packageManager.canRequestPackageInstalls()) {
                                 openUpdateInstaller(context, apk) { updateStatus.value = it }
                             } else {
-                                updateStatus.value = "Allow Ki Companion to install unknown apps in Android settings."
+                                updateStatus.value = "Allow Ki&Tot to install unknown apps in Android settings."
                                 installPermissionLauncher.launch(
                                     Intent(
                                         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -709,7 +749,7 @@ private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (S
     } catch (error: ActivityNotFoundException) {
         onError("Android could not open the package installer.")
     } catch (error: SecurityException) {
-        onError("Android blocked the installer. Allow Ki Companion to install unknown apps and try again.")
+        onError("Android blocked the installer. Allow Ki&Tot to install unknown apps and try again.")
     } catch (error: IllegalArgumentException) {
         onError("The update APK could not be opened. Check for updates and download it again.")
     }
@@ -728,7 +768,7 @@ private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, 
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val travel = remember { Animatable(0.02f) }
-            val bob = rememberInfiniteTransition(label = "ki-bob")
+            val bob = rememberInfiniteTransition(label = "tot-bob")
                 .animateFloat(
                     initialValue = -2f,
                     targetValue = 2f,
@@ -823,13 +863,68 @@ private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, 
                     size = androidx.compose.ui.geometry.Size(10f * unit, 6f * unit),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f * unit),
                 )
+                val totBob = kotlin.math.sin(System.currentTimeMillis() / 260.0).toFloat() * 1.8f * unit
+                val totWidth = 27f * unit
+                val totHeight = 30f * unit
+                val totX = x - totWidth - 5f * unit
+                val totY = baseY + 8f * unit + totBob
+                val totBody = Color(0xFF49445C)
+                val totFace = Color(0xFFD8CFFF)
+                drawRoundRect(
+                    color = Color(0xFFC6A9FF).copy(alpha = 0.16f),
+                    topLeft = androidx.compose.ui.geometry.Offset(totX - 4f * unit, totY - 4f * unit),
+                    size = androidx.compose.ui.geometry.Size(totWidth + 8f * unit, totHeight + 8f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(11f * unit),
+                )
+                drawRoundRect(
+                    color = totBody,
+                    topLeft = androidx.compose.ui.geometry.Offset(totX, totY),
+                    size = androidx.compose.ui.geometry.Size(totWidth, totHeight),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(9f * unit),
+                )
+                drawRoundRect(
+                    color = totFace,
+                    topLeft = androidx.compose.ui.geometry.Offset(totX + 3f * unit, totY + 5f * unit),
+                    size = androidx.compose.ui.geometry.Size(totWidth - 6f * unit, 18f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f * unit),
+                )
+                drawRoundRect(
+                    color = totBody,
+                    topLeft = androidx.compose.ui.geometry.Offset(totX + 8f * unit, totY - 5f * unit),
+                    size = androidx.compose.ui.geometry.Size(3f * unit, 6f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f * unit),
+                )
+                drawCircle(
+                    color = Color(0xFFC6A9FF),
+                    radius = 2f * unit,
+                    center = androidx.compose.ui.geometry.Offset(totX + 9.5f * unit, totY - 6f * unit),
+                )
+                drawCircle(Color(0xFF292536), radius = 1.8f * unit, center = androidx.compose.ui.geometry.Offset(totX + 9f * unit, totY + 12f * unit))
+                drawCircle(Color(0xFF292536), radius = 1.8f * unit, center = androidx.compose.ui.geometry.Offset(totX + 18f * unit, totY + 12f * unit))
+                val totMouth = Path().apply {
+                    moveTo(totX + 11f * unit, totY + 17f * unit)
+                    quadraticTo(totX + 13.5f * unit, totY + 19f * unit, totX + 16f * unit, totY + 17f * unit)
+                }
+                drawPath(totMouth, color = Color(0xFF292536), style = Stroke(width = 1.2f * unit))
+                drawRoundRect(
+                    color = totBody,
+                    topLeft = androidx.compose.ui.geometry.Offset(totX + 4f * unit, totY + 27f * unit + totBob),
+                    size = androidx.compose.ui.geometry.Size(8f * unit, 5f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.5f * unit),
+                )
+                drawRoundRect(
+                    color = totBody,
+                    topLeft = androidx.compose.ui.geometry.Offset(totX + 16f * unit, totY + 27f * unit - totBob),
+                    size = androidx.compose.ui.geometry.Size(8f * unit, 5f * unit),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.5f * unit),
+                )
             }
             Column(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(start = 16.dp, top = 13.dp, end = 82.dp),
             ) {
-                Text("KI IS WITH YOU", color = KiAccent, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
+                Text("KI & TOT ARE WITH YOU", color = KiAccent, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     status,
@@ -840,7 +935,7 @@ private fun KiTravelCard(status: String, isError: Boolean, isThinking: Boolean, 
                 )
                 if (!isError) {
                     Text(
-                        if (isThinking) "Thinking…" else "Tap me for a little hello",
+                        if (isThinking) "Thinking…" else "Tap us for a little hello",
                         color = KiMuted,
                         fontSize = 11.sp,
                     )
@@ -970,7 +1065,7 @@ private fun MessageBubble(message: ChatMessage) {
                 .padding(horizontal = 13.dp, vertical = 10.dp),
         ) {
             Text(
-                if (isUser) "YOU" else "KI",
+                if (isUser) "YOU" else "TOT",
                 color = if (isUser) KiAccent else KiMuted,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,

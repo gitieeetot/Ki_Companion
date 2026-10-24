@@ -10,7 +10,7 @@ class CompanionWindow(QDialog):
         super().__init__(parent)
         self.chat = chat
         self.dashboard = dashboard
-        self.setWindowTitle("Ki")
+        self.setWindowTitle("Ki&Tot")
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
@@ -52,7 +52,7 @@ class CompanionWindow(QDialog):
         bar.addWidget(brand_mark)
         brand_col = QVBoxLayout()
         brand_col.setSpacing(1)
-        brand_title = QLabel("Ki")
+        brand_title = QLabel("Ki&Tot")
         brand_title.setObjectName("brandTitle")
         brand_status = QLabel("LOCAL COMPANION")
         self.brand_status = brand_status

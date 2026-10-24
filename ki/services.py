@@ -23,11 +23,16 @@ class VoiceInputWorker(QThread):
         self.source = source if source in {"microphone", "laptop", "both"} else "microphone"
         self.continuous = continuous
         self.stop_event = threading.Event()
+        self.cancel_event = threading.Event()
         self.audio_queue = queue.Queue(maxsize=16)
         self.loopback_audio = None
         self.loopback_pyaudio = None
 
     def stop_listening(self):
+        self.stop_event.set()
+
+    def cancel_listening(self):
+        self.cancel_event.set()
         self.stop_event.set()
 
     def _enqueue_audio(self, source, data):
@@ -117,6 +122,14 @@ class VoiceInputWorker(QThread):
             deadline = None if self.continuous else time.monotonic() + (120 if self.hold_to_talk else 30)
             capture_stopped = False
             while True:
+                if self.cancel_event.is_set():
+                    if not capture_stopped:
+                        if self.loopback_audio is not None:
+                            self.loopback_audio.stop_stream()
+                        if mic_stream is not None:
+                            mic_stream.stop()
+                        capture_stopped = True
+                    break
                 if deadline is not None and time.monotonic() >= deadline:
                     self.stop_event.set()
                 if self.stop_event.is_set() and not capture_stopped:
@@ -149,6 +162,8 @@ class VoiceInputWorker(QThread):
                             segments.append(text)
                 if not self.continuous and segments and last_segment_at and time.monotonic() - last_segment_at > 0.45 and self.audio_queue.empty():
                     break
+            if self.cancel_event.is_set():
+                return
             final_segments = []
             for source, recognizer in recognizers.items():
                 text = json.loads(recognizer.FinalResult()).get("text", "").strip()

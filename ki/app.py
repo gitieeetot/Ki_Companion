@@ -50,7 +50,7 @@ def main():
                 kernel32.CloseHandle(event_handle)
             return
     app = QApplication(sys.argv)
-    app.setApplicationName("Ki")
+    app.setApplicationName("Ki&Tot")
     app.setQuitOnLastWindowClosed(False)
     if kernel32 is not None and _KI_TOGGLE_EVENT:
         toggle_timer = QTimer(app)

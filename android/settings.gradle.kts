@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "KiCompanion"
+rootProject.name = "Ki&Tot"
 include(":app")
