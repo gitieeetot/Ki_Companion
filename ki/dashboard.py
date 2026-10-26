@@ -96,7 +96,7 @@ class KiSummaryDialog(QDialog):
         self.activity_list.setReadOnly(True)
         self.activity_list.setPlaceholderText("OpenCode activity appears here after you start a session.")
         layout.addWidget(self.activity_list, 1)
-        note = QLabel("This summary uses event labels only. Ki does not receive OpenCode chat, code, paths, or commands.")
+        note = QLabel("Ki shares session names, project names, tool labels, and pending permission details with the paired phone. Agent messages are read only when requested.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -299,10 +299,9 @@ class PhoneCompanionDialog(QDialog):
         title.setStyleSheet("font-size:18px; font-weight:700;")
         content_layout.addWidget(title)
         explanation = QLabel(
-            "Keep Ki and your phone on the same Wi-Fi/hotspot, or connect using USB tethering. "
-            "Open Settings → PC connection in Ki Companion and scan the QR code below. Choose the PC network address "
-            "that matches your phone. If Windows asks, allow access "
-            "on private networks only."
+            "Use the same trusted Wi-Fi/hotspot, or install Tailscale on both devices and sign in to the same private tailnet. "
+            "Open Settings → PC connection in Ki Companion and scan the QR code below. Choose the matching private address. "
+            "If Windows asks, allow Python on private networks only."
         )
         explanation.setWordWrap(True)
         explanation.setObjectName("muted")
@@ -329,8 +328,8 @@ class PhoneCompanionDialog(QDialog):
         self.token_label.setWordWrap(True)
         content_layout.addWidget(self.token_label)
         warning = QLabel(
-            "Security: this local connection uses HTTP, not encryption. Use only on a trusted private "
-            "network. The token protects the chat endpoint; disable the bridge when you are finished."
+            "Security: Ki never binds to a public interface. Use trusted Wi-Fi or Tailscale; Tailscale encrypts traffic between your devices. "
+            "Do not port-forward Ki's port. The pairing token protects every phone action; disable phone access when finished."
         )
         warning.setWordWrap(True)
         warning.setStyleSheet("color:#e7b96e;")
@@ -1107,7 +1106,7 @@ class DashboardWindow(QDialog):
         self._agent_details = (
             "OpenCode is configured to use Ki's local Ollama model. Its project permissions ask before file reads, edits, shell commands, or access outside this project; web access and non-Ollama providers are blocked by this project config.\n\n"
             + "\n".join(rows)
-            + "\n\nOptional monitoring works only for OpenCode sessions started in Ki_Companion. If enabled, Ki receives allowlisted event names over 127.0.0.1. Prompts, file contents, commands, paths, and model responses are not sent to Ki. Approvals still appear in OpenCode."
+            + "\n\nOptional monitoring uses OpenCode's user-level plugin, so it can see sessions from other projects. Ki keeps a short in-memory activity list and sends session messages to Tot only when you open that session. Permission requests show their requested action; Tot can allow only once or deny, never remember an approval."
         )
 
     def toggle_agent_monitor(self):
@@ -1121,15 +1120,19 @@ class DashboardWindow(QDialog):
                 QMessageBox.StandardButton.No,
             )
             if answer == QMessageBox.StandardButton.Yes:
-                self.agent_monitor.disable()
+                try:
+                    self.agent_monitor.disable()
+                except OSError as error:
+                    QMessageBox.warning(self, "Could not fully disconnect the OpenCode monitor", str(error))
                 self._agent_latest_event = None
                 self.refresh_agent_status()
             return
         answer = QMessageBox.question(
             self,
             "Connect OpenCode monitor",
-            "Allow Ki to receive a small set of OpenCode activity labels on this laptop?\n\n"
-            "It reports only event names such as session idle, working, or approval requested. It does not send prompts, responses, file contents, paths, commands, or API keys. The receiver listens only on this computer and the project plugin runs only in Ki_Companion. OpenCode will still ask before reads, edits, and commands.\n\nConnect the monitor?",
+            "Install Ki's OpenCode plugin for your user account and enable the local monitor?\n\n"
+            "Ki receives session and project names, tool labels, and pending permission details. When you open an agent session in Tot, its recent messages are sent to the phone. You can explicitly send an instruction or allow one pending permission; future permissions are never auto-approved. Monitoring works across your OpenCode projects. Restart OpenCode after connecting so it loads the plugin.\n\n"
+            "The monitor listens only on this PC. Phone access is separate and must also be enabled in Ki's phone companion settings. Connect the monitor?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

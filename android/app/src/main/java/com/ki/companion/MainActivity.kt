@@ -20,6 +20,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -75,6 +76,7 @@ import androidx.core.content.FileProvider
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -108,6 +110,28 @@ private val KiError = Color(0xFFFF9D94)
 
 private data class ChatMessage(val role: String, val content: String)
 private data class TextAttachment(val name: String, val contentBase64: String, val isImage: Boolean = false)
+private data class AgentSession(
+    val id: String,
+    val title: String,
+    val project: String,
+    val status: String,
+)
+private data class AgentPermission(
+    val id: String,
+    val sessionId: String,
+    val title: String,
+    val type: String,
+    val patterns: List<String>,
+)
+private data class AgentMessage(val role: String, val content: String)
+private data class AgentEvent(
+    val type: String,
+    val sessionId: String,
+    val project: String,
+    val tool: String,
+    val permissionTitle: String,
+    val time: Long,
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,6 +181,15 @@ private fun KiCompanionScreen(context: Context) {
     val showImageTextReview = remember { mutableStateOf(false) }
     val imageOcrBusy = remember { mutableStateOf(false) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
+    val agentSessions = remember { mutableStateListOf<AgentSession>() }
+    val agentPermissions = remember { mutableStateListOf<AgentPermission>() }
+    val agentEvents = remember { mutableStateListOf<AgentEvent>() }
+    val agentMessages = remember { mutableStateListOf<AgentMessage>() }
+    val selectedAgent = remember { mutableStateOf<AgentSession?>(null) }
+    val agentInput = remember { mutableStateOf("") }
+    val agentBusy = remember { mutableStateOf(false) }
+    val showAgentPanel = remember { mutableStateOf(false) }
+    val confirmAgentPermission = remember { mutableStateOf<AgentPermission?>(null) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val phoneTts = remember(context) {
@@ -273,6 +306,119 @@ private fun KiCompanionScreen(context: Context) {
                 statusIsError.value = true
             } finally {
                 busy.value = false
+            }
+        }
+    }
+
+    fun loadAgentMessages(sessionId: String) {
+        if (agentBusy.value) return
+        agentBusy.value = true
+        status.value = "Loading the OpenCode session…"
+        statusIsError.value = false
+        scope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) {
+                    fetchAgentMessages(host.value, token.value, sessionId)
+                }
+                agentMessages.clear()
+                agentMessages.addAll(loaded)
+                status.value = "OpenCode session refreshed"
+            } catch (error: Exception) {
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                agentBusy.value = false
+            }
+        }
+    }
+
+    fun refreshAgentSessions() {
+        if (agentBusy.value) return
+        agentBusy.value = true
+        status.value = "Checking OpenCode sessions…"
+        statusIsError.value = false
+        scope.launch {
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    fetchAgentSnapshot(host.value, token.value)
+                }
+                agentSessions.clear()
+                agentSessions.addAll(snapshot.first)
+                agentPermissions.clear()
+                agentPermissions.addAll(snapshot.second)
+                agentEvents.clear()
+                agentEvents.addAll(snapshot.third)
+                val current = selectedAgent.value
+                val selected = agentSessions.firstOrNull { it.id == current?.id }
+                    ?: agentSessions.firstOrNull()
+                selectedAgent.value = selected
+                if (selected != null) {
+                    val loaded = withContext(Dispatchers.IO) {
+                        fetchAgentMessages(host.value, token.value, selected.id)
+                    }
+                    agentMessages.clear()
+                    agentMessages.addAll(loaded)
+                }
+                showAgentPanel.value = true
+                status.value = if (agentSessions.isEmpty()) {
+                    "No OpenCode sessions seen yet. Start OpenCode with Ki's monitor enabled."
+                } else {
+                    "OpenCode activity loaded"
+                }
+            } catch (error: Exception) {
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                agentBusy.value = false
+            }
+        }
+    }
+
+    fun sendAgentAction(action: String, sessionId: String, text: String = "", permission: AgentPermission? = null, response: String = "") {
+        if (agentBusy.value) return
+        agentBusy.value = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    sendAgentAction(
+                        host.value,
+                        token.value,
+                        action,
+                        sessionId,
+                        text,
+                        permission?.id.orEmpty(),
+                        response,
+                    )
+                }
+                val snapshot = withContext(Dispatchers.IO) {
+                    fetchAgentSnapshot(host.value, token.value)
+                }
+                agentSessions.clear()
+                agentSessions.addAll(snapshot.first)
+                agentPermissions.clear()
+                agentPermissions.addAll(snapshot.second)
+                agentEvents.clear()
+                agentEvents.addAll(snapshot.third)
+                val selected = agentSessions.firstOrNull { it.id == sessionId }
+                selectedAgent.value = selected
+                if (selected != null) {
+                    val loaded = withContext(Dispatchers.IO) {
+                        fetchAgentMessages(host.value, token.value, selected.id)
+                    }
+                    agentMessages.clear()
+                    agentMessages.addAll(loaded)
+                }
+                agentInput.value = if (action == "prompt" || action == "answer") "" else agentInput.value
+                status.value = when (action) {
+                    "permission" -> if (response == "allow_once") "Allowed this one OpenCode request" else "Denied the OpenCode request"
+                    else -> "Sent your message to OpenCode"
+                }
+                statusIsError.value = false
+            } catch (error: Exception) {
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                agentBusy.value = false
             }
         }
     }
@@ -467,6 +613,39 @@ private fun KiCompanionScreen(context: Context) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
+    LaunchedEffect(showAgentPanel.value) {
+        while (showAgentPanel.value) {
+            if (!agentBusy.value && host.value.isNotBlank() && token.value.isNotBlank()) {
+                try {
+                    val snapshot = withContext(Dispatchers.IO) {
+                        fetchAgentSnapshot(host.value, token.value)
+                    }
+                    agentSessions.clear()
+                    agentSessions.addAll(snapshot.first)
+                    agentPermissions.clear()
+                    agentPermissions.addAll(snapshot.second)
+                    agentEvents.clear()
+                    agentEvents.addAll(snapshot.third)
+                    val current = selectedAgent.value
+                    val selected = agentSessions.firstOrNull { it.id == current?.id }
+                        ?: agentSessions.firstOrNull()
+                    selectedAgent.value = selected
+                    if (selected != null) {
+                        val loaded = withContext(Dispatchers.IO) {
+                            fetchAgentMessages(host.value, token.value, selected.id)
+                        }
+                        agentMessages.clear()
+                        agentMessages.addAll(loaded)
+                    }
+                } catch (error: Exception) {
+                    status.value = describeNetworkError(error)
+                    statusIsError.value = true
+                }
+            }
+            delay(4_000)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -485,6 +664,12 @@ private fun KiCompanionScreen(context: Context) {
         ) {
             Column {
                 Text("Tot", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+            }
+            TextButton(
+                enabled = !busy.value && !agentBusy.value,
+                onClick = { refreshAgentSessions() },
+            ) {
+                Text("Agents", color = KiAccent, fontWeight = FontWeight.SemiBold)
             }
             TextButton(onClick = { showSettings.value = true }) {
                 Text("Settings", color = KiAccent, fontWeight = FontWeight.SemiBold)
@@ -694,7 +879,7 @@ private fun KiCompanionScreen(context: Context) {
             }
         }
         Text(
-            "Tot chats with Ki on your PC over your local network.",
+            "Tot connects to Ki over trusted Wi-Fi or your private Tailscale network.",
             color = KiMuted,
             fontSize = 11.sp,
             modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -745,6 +930,203 @@ private fun KiCompanionScreen(context: Context) {
         )
     }
 
+    if (showAgentPanel.value) {
+        AlertDialog(
+            onDismissRequest = { showAgentPanel.value = false },
+            containerColor = KiSurface,
+            title = {
+                Text("OpenCode sessions", color = KiText, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "Sessions and messages are read from OpenCode on your PC. Permission actions apply only to the selected request.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Recent sessions", color = KiText, fontWeight = FontWeight.SemiBold)
+                        TextButton(
+                            enabled = !agentBusy.value,
+                            onClick = { refreshAgentSessions() },
+                        ) { Text("Refresh", color = KiAccent) }
+                    }
+                    if (agentSessions.isEmpty()) {
+                        Text(
+                            "No sessions yet. Enable the OpenCode monitor on Ki's PC, then restart OpenCode.",
+                            color = KiMuted,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    agentSessions.forEach { session ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !agentBusy.value) {
+                                    selectedAgent.value = session
+                                    agentMessages.clear()
+                                    loadAgentMessages(session.id)
+                                },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (selectedAgent.value?.id == session.id) KiSurfaceRaised else KiBackground,
+                            ),
+                        ) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text(session.title.ifBlank { "OpenCode session" }, color = KiText, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    listOf(session.project, session.status).filter { it.isNotBlank() }.joinToString(" · "),
+                                    color = KiMuted,
+                                    fontSize = 10.sp,
+                                )
+                            }
+                        }
+                    }
+                    val selected = selectedAgent.value
+                    if (selected != null) {
+                        val sessionEvents = agentEvents.filter { it.sessionId == selected.id }.takeLast(8).reversed()
+                        if (sessionEvents.isNotEmpty()) {
+                            Text("Recent activity", color = KiText, fontWeight = FontWeight.SemiBold)
+                            sessionEvents.forEach { event ->
+                                val activity = when (event.type) {
+                                    "session.created" -> "Session started"
+                                    "session.idle" -> "Agent is waiting"
+                                    "session.error" -> "Session error"
+                                    "permission.asked" -> "Permission requested: ${event.permissionTitle}"
+                                    "permission.replied" -> "Permission answered"
+                                    "tool.execute.before" -> "Started ${event.tool.ifBlank { "a tool" }}"
+                                    "tool.execute.after" -> "Finished ${event.tool.ifBlank { "a tool" }}"
+                                    else -> event.type.replace('.', ' ')
+                                }
+                                Text(activity, color = KiMuted, fontSize = 10.sp)
+                            }
+                        }
+                        Text("Latest messages", color = KiText, fontWeight = FontWeight.SemiBold)
+                        if (agentMessages.isEmpty()) {
+                            Text("Tap Refresh to read this session's recent messages.", color = KiMuted, fontSize = 11.sp)
+                        }
+                        agentMessages.takeLast(8).forEach { message ->
+                            Text(
+                                "${if (message.role == "assistant") "Agent" else "You"}: ${message.content}",
+                                color = if (message.role == "assistant") KiText else KiMuted,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        val pending = agentPermissions.filter { it.sessionId == selected.id }
+                        if (pending.isNotEmpty()) {
+                            Text("Waiting for permission", color = KiText, fontWeight = FontWeight.SemiBold)
+                            pending.forEach { permission ->
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF3A3030)),
+                                ) {
+                                    Column(
+                                        Modifier.fillMaxWidth().padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Text(permission.title, color = KiText, fontSize = 12.sp)
+                                        if (permission.patterns.isNotEmpty()) {
+                                            Text(permission.patterns.joinToString("\n"), color = KiMuted, fontSize = 10.sp)
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            TextButton(
+                                                enabled = !agentBusy.value,
+                                                onClick = { confirmAgentPermission.value = permission },
+                                            ) { Text("Allow once", color = KiAccent) }
+                                            TextButton(
+                                                enabled = !agentBusy.value,
+                                                onClick = {
+                                                    sendAgentAction(
+                                                        "permission",
+                                                        selected.id,
+                                                        permission = permission,
+                                                        response = "deny",
+                                                    )
+                                                },
+                                            ) { Text("Deny", color = KiError) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = agentInput.value,
+                            onValueChange = { if (it.length <= 2_000) agentInput.value = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Reply or instruct this agent") },
+                            minLines = 2,
+                            maxLines = 4,
+                            colors = kiTextFieldColors(),
+                        )
+                        Button(
+                            enabled = !agentBusy.value && agentInput.value.isNotBlank(),
+                            onClick = {
+                                sendAgentAction("answer", selected.id, text = agentInput.value.trim())
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = KiAccent,
+                                contentColor = Color(0xFF101417),
+                            ),
+                        ) { Text("Send to OpenCode") }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAgentPanel.value = false }) {
+                    Text("Done", color = KiAccent)
+                }
+            },
+        )
+    }
+
+    confirmAgentPermission.value?.let { permission ->
+        AlertDialog(
+            onDismissRequest = { confirmAgentPermission.value = null },
+            containerColor = KiSurface,
+            title = { Text("Allow this one request?", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(permission.title, color = KiText)
+                    if (permission.patterns.isNotEmpty()) {
+                        Text(permission.patterns.joinToString("\n"), color = KiMuted, fontSize = 11.sp)
+                    }
+                    Text("This is a one-time approval. Tot will not remember or automatically approve future requests.", color = KiMuted, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !agentBusy.value,
+                    onClick = {
+                        confirmAgentPermission.value = null
+                        sendAgentAction(
+                            "permission",
+                            permission.sessionId,
+                            permission = permission,
+                            response = "allow_once",
+                        )
+                    },
+                ) { Text("Allow once", color = KiAccent, fontWeight = FontWeight.SemiBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmAgentPermission.value = null }) {
+                    Text("Cancel", color = KiMuted)
+                }
+            },
+        )
+    }
+
     if (showPairingHelp.value) {
         AlertDialog(
             onDismissRequest = { showPairingHelp.value = false },
@@ -754,8 +1136,8 @@ private fun KiCompanionScreen(context: Context) {
                 Text(
                     "1. On the PC, open Ki → Dashboard → Device & activity → Phone companion.\n\n" +
                         "2. Tap Scan QR here and point your camera at the code shown by the PC dashboard. You can also enter the address and pairing token manually.\n\n" +
-                        "3. Put both devices on the same Wi-Fi/hotspot, allow Python through the Windows private-network firewall, then tap Test connection.\n\n" +
-                        "USB file-transfer mode does not create a network connection. The local chat connection is not encrypted; use a trusted network.",
+                            "3. Connect both devices to the same trusted Wi-Fi/hotspot, or install Tailscale on both and sign in to the same private tailnet. Allow Python through the Windows private-network firewall, then tap Test connection.\n\n" +
+                            "USB file-transfer mode does not create a network connection. Do not open or forward Ki's port to the public internet. The Wi-Fi connection uses HTTP, so use only a trusted network; Tailscale encrypts traffic between your devices.",
                     color = KiMuted,
                 )
             },
@@ -1111,7 +1493,7 @@ private fun ConnectionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text("PC connection", color = KiText, fontWeight = FontWeight.SemiBold)
-                Text("Local only", color = KiAccent, fontSize = 11.sp)
+                Text("Private network", color = KiAccent, fontSize = 11.sp)
             }
             Button(
                 onClick = onScan,
@@ -1253,18 +1635,9 @@ private fun parsePairingCode(contents: String): Pair<String, String> {
     ) {
         throw IOException("Use a Ki pairing QR code for the local PC bridge.")
     }
-    val octets = uri.host?.split('.')
-        ?: throw IOException("The QR code must contain the PC's private IPv4 address.")
-    if (octets.size != 4) throw IOException("The QR code must contain the PC's private IPv4 address.")
-    val address = octets.map { component ->
-        component.toIntOrNull()?.takeIf { it in 0..255 }
-            ?: throw IOException("The QR code contains an invalid private IPv4 address.")
+    if (!isAllowedPrivateBridgeAddress(uri.host.orEmpty())) {
+        throw IOException("The QR code must point to a private local-network or Tailscale address.")
     }
-    val privateAddress = address[0] == 10 ||
-        (address[0] == 172 && address[1] in 16..31) ||
-        (address[0] == 192 && address[1] == 168) ||
-        (address[0] == 169 && address[1] == 254)
-    if (!privateAddress) throw IOException("The QR code must point to a private local network address.")
     if (token.isBlank() || token.length > 256) throw IOException("The QR code does not contain a valid pairing token.")
     return host to token
 }
@@ -1273,7 +1646,29 @@ private fun normalizeHost(value: String): String {
     val host = value.trim().trimEnd('/')
     if (host.isEmpty()) throw IOException("Enter the PC address shown in Ki's dashboard.")
     if (!host.startsWith("http://")) throw IOException("Enter the full http:// address shown in Ki's dashboard.")
+    val uri = try {
+        URI(host)
+    } catch (error: URISyntaxException) {
+        throw IOException("Enter a valid PC address shown in Ki's dashboard.", error)
+    }
+    if (uri.port != 8765 || uri.rawUserInfo != null || uri.rawQuery != null ||
+        uri.rawFragment != null || uri.rawPath !in listOf("", "/") ||
+        !isAllowedPrivateBridgeAddress(uri.host.orEmpty())
+    ) {
+        throw IOException("Use the private local-network or Tailscale address shown in Ki's dashboard.")
+    }
     return host
+}
+
+private fun isAllowedPrivateBridgeAddress(host: String): Boolean {
+    val octets = host.split('.')
+    if (octets.size != 4) return false
+    val address = octets.map { it.toIntOrNull()?.takeIf { part -> part in 0..255 } ?: return false }
+    val tailscaleAddress = address[0] == 100 && address[1] in 64..127
+    return tailscaleAddress || address[0] == 10 ||
+        (address[0] == 172 && address[1] in 16..31) ||
+        (address[0] == 192 && address[1] == 168) ||
+        (address[0] == 169 && address[1] == 254)
 }
 
 private fun checkConnection(hostValue: String, token: String): String {
@@ -1330,6 +1725,124 @@ private fun sendChat(
         if (code !in 200..299) throw IOException(response.optString("error", "Ki could not answer (HTTP $code)."))
         return response.optString("answer").takeIf { it.isNotBlank() }
             ?: throw IOException("Ki returned an empty reply.")
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun fetchAgentSnapshot(hostValue: String, token: String): Triple<List<AgentSession>, List<AgentPermission>, List<AgentEvent>> {
+    val connection = openConnection("${normalizeHost(hostValue)}/api/agents", token, "GET")
+    try {
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) throw IOException(response.optString("error", "Could not read OpenCode sessions (HTTP $code)."))
+        val sessionsJson = response.optJSONArray("sessions") ?: JSONArray()
+        val sessions = (0 until sessionsJson.length()).mapNotNull { index ->
+            val item = sessionsJson.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optString("id")
+            if (id.isBlank()) return@mapNotNull null
+            AgentSession(
+                id = id,
+                title = item.optString("title"),
+                project = item.optString("project"),
+                status = item.optString("status"),
+            )
+        }
+        val permissionsJson = response.optJSONArray("permissions") ?: JSONArray()
+        val permissions = (0 until permissionsJson.length()).mapNotNull { index ->
+            val item = permissionsJson.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optString("id")
+            val sessionId = item.optString("session_id")
+            if (id.isBlank() || sessionId.isBlank()) return@mapNotNull null
+            val patternsJson = item.optJSONArray("patterns") ?: JSONArray()
+            AgentPermission(
+                id = id,
+                sessionId = sessionId,
+                title = item.optString("title", "OpenCode permission request"),
+                type = item.optString("type"),
+                patterns = (0 until patternsJson.length())
+                    .mapNotNull { patternIndex -> patternsJson.optString(patternIndex).takeIf(String::isNotBlank) }
+                    .take(12),
+            )
+        }
+        val eventsJson = response.optJSONArray("events") ?: JSONArray()
+        val events = (0 until eventsJson.length()).mapNotNull { index ->
+            val item = eventsJson.optJSONObject(index) ?: return@mapNotNull null
+            val sessionId = item.optString("session_id")
+            if (sessionId.isBlank()) return@mapNotNull null
+            val permission = item.optJSONObject("permission")
+            AgentEvent(
+                type = item.optString("type"),
+                sessionId = sessionId,
+                project = item.optString("project_name"),
+                tool = item.optString("tool"),
+                permissionTitle = permission?.optString("title").orEmpty(),
+                time = (item.optDouble("time") * 1000).toLong(),
+            )
+        }
+        return Triple(sessions, permissions, events)
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun fetchAgentMessages(hostValue: String, token: String, sessionId: String): List<AgentMessage> {
+    if (!sessionId.matches(Regex("[A-Za-z0-9_-]{1,200}"))) {
+        throw IOException("That OpenCode session ID is invalid.")
+    }
+    val connection = openConnection(
+        "${normalizeHost(hostValue)}/api/agents/${Uri.encode(sessionId)}/messages",
+        token,
+        "GET",
+    )
+    try {
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) throw IOException(response.optString("error", "Could not read OpenCode messages (HTTP $code)."))
+        val messagesJson = response.optJSONArray("messages") ?: JSONArray()
+        return (0 until messagesJson.length()).mapNotNull { index ->
+            val item = messagesJson.optJSONObject(index) ?: return@mapNotNull null
+            val content = item.optString("content").take(6_000)
+            if (content.isBlank()) return@mapNotNull null
+            AgentMessage(
+                role = if (item.optString("role") == "assistant") "assistant" else "user",
+                content = content,
+            )
+        }.takeLast(20)
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun sendAgentAction(
+    hostValue: String,
+    token: String,
+    action: String,
+    sessionId: String,
+    text: String,
+    permissionId: String,
+    response: String,
+) {
+    val body = JSONObject().apply {
+        put("action", action)
+        put("session_id", sessionId)
+        if (text.isNotBlank()) put("text", text)
+        if (permissionId.isNotBlank()) put("permission_id", permissionId)
+        if (response.isNotBlank()) put("response", response)
+    }
+    val connection = openConnection("${normalizeHost(hostValue)}/api/agents/action", token, "POST")
+    try {
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val responseJson = JSONObject(responseText)
+        if (code !in 200..299) {
+            throw IOException(responseJson.optString("error", "OpenCode action failed (HTTP $code)."))
+        }
     } finally {
         connection.disconnect()
     }

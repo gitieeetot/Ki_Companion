@@ -5,6 +5,7 @@ from .services import OLLAMA_MODEL_LOCK, OLLAMA_TEXT_MODEL, OLLAMA_VISION_MODEL,
 import base64
 import ipaddress
 import socket
+import re
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -15,10 +16,12 @@ PHONE_BRIDGE_MAX_ATTACHMENT = 512_000
 PHONE_BRIDGE_MAX_IMAGE = 2_000_000
 PHONE_BRIDGE_ALLOWED_SUFFIXES = {".txt", ".md", ".json", ".csv", ".py", ".html", ".css", ".js", ".ts"}
 PHONE_BRIDGE_ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 def phone_connection_addresses():
     addresses = set()
+    tailscale_addresses = set()
     try:
         for address in socket.gethostbyname_ex(socket.gethostname())[2]:
             addresses.add(address)
@@ -38,6 +41,28 @@ def phone_connection_addresses():
             addresses.update(re.findall(r"(?im)^\s*[^:\r\n]*\bIPv4[^:\r\n]*:\s*([\d.]+)", result.stdout))
         except (OSError, subprocess.SubprocessError):
             pass
+        try:
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias '*Tailscale*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+                check=False,
+            )
+            tailscale_addresses.update(
+                line.strip() for line in result.stdout.splitlines() if line.strip()
+            )
+            addresses.update(tailscale_addresses)
+        except (OSError, subprocess.SubprocessError):
+            pass
     route_address = None
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -54,7 +79,12 @@ def phone_connection_addresses():
             parsed = ipaddress.ip_address(address)
         except ValueError:
             continue
-        if parsed.version == 4 and (parsed.is_private or parsed.is_link_local) and not parsed.is_loopback:
+        is_tailscale = (
+            str(parsed) in tailscale_addresses
+            and parsed in TAILSCALE_IPV4_NETWORK
+        )
+        is_private_lan = parsed.is_private and parsed not in TAILSCALE_IPV4_NETWORK
+        if parsed.version == 4 and (is_private_lan or parsed.is_link_local or is_tailscale) and not parsed.is_loopback:
             usable.append(str(parsed))
     ordered = sorted(set(usable))
     if route_address in ordered:
@@ -76,6 +106,7 @@ class PhoneCompanionServer(QObject):
         self._token = ""
         self._rate_lock = threading.Lock()
         self._requests_by_address = {}
+        self.agent_monitor = None
 
     @property
     def enabled(self):
@@ -133,6 +164,41 @@ class PhoneCompanionServer(QObject):
                 return True
 
             def do_GET(self):
+                if self.path == "/api/agents":
+                    if not self._authorized():
+                        self._send_json(401, {"error": "Pairing token is invalid."})
+                        return
+                    if not bridge.enabled:
+                        self._send_json(503, {"error": "Phone companion is disabled."})
+                        return
+                    if bridge.agent_monitor is None or not bridge.agent_monitor.enabled:
+                        self._send_json(503, {"error": "Enable the OpenCode monitor on Ki's PC first."})
+                        return
+                    self._send_json(200, bridge.agent_monitor.agent_snapshot())
+                    return
+                agent_match = re.fullmatch(r"/api/agents/([A-Za-z0-9_-]{1,200})/messages", self.path)
+                if agent_match:
+                    if not self._authorized():
+                        self._send_json(401, {"error": "Pairing token is invalid."})
+                        return
+                    if not bridge.enabled:
+                        self._send_json(503, {"error": "Phone companion is disabled."})
+                        return
+                    monitor = bridge.agent_monitor
+                    if monitor is None or not monitor.enabled:
+                        self._send_json(503, {"error": "Enable the OpenCode monitor on Ki's PC first."})
+                        return
+                    session_id = agent_match.group(1)
+                    if not monitor.has_session(session_id):
+                        self._send_json(404, {"error": "That OpenCode session is not active in Ki's monitor."})
+                        return
+                    try:
+                        result = monitor.request_command({"action": "messages", "session_id": session_id}, timeout=35)
+                    except (TimeoutError, ValueError) as error:
+                        self._send_json(503, {"error": str(error)})
+                        return
+                    self._send_json(200, result)
+                    return
                 if self.path != "/api/status":
                     self._send_json(404, {"error": "Not found."})
                     return
@@ -150,7 +216,7 @@ class PhoneCompanionServer(QObject):
                 })
 
             def do_POST(self):
-                if self.path != "/api/chat":
+                if self.path not in {"/api/chat", "/api/agents/action"}:
                     self._send_json(404, {"error": "Not found."})
                     return
                 if not self._authorized():
@@ -177,6 +243,9 @@ class PhoneCompanionServer(QObject):
                     payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                     if not isinstance(payload, dict):
                         raise ValueError("Request must be a JSON object.")
+                    if self.path == "/api/agents/action":
+                        bridge._handle_agent_action(self, payload)
+                        return
                     messages = bridge._validate_messages(payload.get("messages"))
                     user_message = messages[-1]["content"]
                     attachment = payload.get("attachment")
@@ -199,7 +268,7 @@ class PhoneCompanionServer(QObject):
 
         addresses = phone_connection_addresses()
         if not addresses:
-            raise OSError("No private IPv4 network address was detected. Connect to Wi-Fi or USB tethering and try again.")
+            raise OSError("No private IPv4 or Tailscale address was detected. Connect to trusted Wi-Fi or sign in to Tailscale, then try again.")
         self._token = secrets.token_urlsafe(32)
         servers = []
         threads = []
@@ -214,7 +283,7 @@ class PhoneCompanionServer(QObject):
         if not servers:
             self._token = ""
             details = "; ".join(bind_errors)
-            raise OSError(f"Could not listen on a private network address. {details}")
+            raise OSError(f"Could not listen on a private network or Tailscale address. {details}")
         try:
             self._servers = servers
             for index, server in enumerate(servers):
@@ -240,6 +309,8 @@ class PhoneCompanionServer(QObject):
         servers, self._servers = self._servers, []
         threads, self._threads = self._threads, []
         self._token = ""
+        if self.agent_monitor is not None:
+            self.agent_monitor.cancel_pending_commands()
         for server in servers:
             server.shutdown()
             server.server_close()
@@ -247,6 +318,53 @@ class PhoneCompanionServer(QObject):
             thread.join(timeout=2)
         with self._rate_lock:
             self._requests_by_address.clear()
+
+    @staticmethod
+    def _valid_session_id(value):
+        return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}", value) is not None
+
+    def _handle_agent_action(self, handler, payload):
+        monitor = self.agent_monitor
+        if monitor is None or not monitor.enabled:
+            handler._send_json(503, {"error": "Enable the OpenCode monitor on Ki's PC first."})
+            return
+        action = payload.get("action")
+        session_id = payload.get("session_id")
+        if not self._valid_session_id(session_id) or not monitor.has_session(session_id):
+            handler._send_json(404, {"error": "Choose an active OpenCode session."})
+            return
+        try:
+            if action == "permission":
+                permission_id = payload.get("permission_id")
+                response = payload.get("response")
+                if not isinstance(permission_id, str) or len(permission_id) > 200:
+                    raise ValueError("The permission request ID is invalid.")
+                if response not in {"allow_once", "deny"}:
+                    raise ValueError("Choose Allow once or Deny. Remembered approvals are not available from Tot.")
+                if not monitor.has_pending_permission(session_id, permission_id):
+                    handler._send_json(409, {"error": "That permission is no longer pending. Refresh the agent list."})
+                    return
+                result = monitor.request_command({
+                    "action": "permission",
+                    "session_id": session_id,
+                    "permission_id": permission_id,
+                    "response": "once" if response == "allow_once" else "reject",
+                }, timeout=20)
+            elif action in {"prompt", "answer"}:
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text) > 2_000:
+                    raise ValueError("Write an instruction between 1 and 2,000 characters.")
+                result = monitor.request_command({
+                    "action": "prompt",
+                    "session_id": session_id,
+                    "text": text.strip(),
+                }, timeout=25)
+            else:
+                raise ValueError("That OpenCode phone action is not supported.")
+        except (TimeoutError, ValueError) as error:
+            handler._send_json(503, {"error": str(error)})
+            return
+        handler._send_json(200, {"ok": True, **result})
 
     @staticmethod
     def _local_model_status():

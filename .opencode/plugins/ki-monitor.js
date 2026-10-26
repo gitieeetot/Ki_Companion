@@ -15,6 +15,7 @@ async function sendEvent(type) {
     if (!local || !allowed.has(type)) return;
     const bridgeFile = path.join(local, "Ki", "opencode_monitor.json");
     const bridge = JSON.parse(fs.readFileSync(bridgeFile, "utf8"));
+    if (bridge.protocol === 2) return;
     if (!Number.isInteger(bridge.port) || typeof bridge.token !== "string") return;
     await fetch(`http://127.0.0.1:${bridge.port}/event`, {
       method: "POST",

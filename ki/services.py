@@ -390,21 +390,29 @@ def local_agent_tool_status():
     }
 
 class OpenCodeMonitor:
-    """Opt-in, loopback-only receiver for redacted OpenCode event names."""
+    """Opt-in, loopback-only bridge for OpenCode activity and explicit phone actions."""
 
     ALLOWED_EVENTS = {
         "session.created", "session.updated", "session.status", "session.idle",
         "session.error", "permission.asked", "permission.replied",
         "tool.execute.before", "tool.execute.after",
     }
+    PLUGIN_MARKER = "Ki Companion OpenCode agent bridge"
 
     def __init__(self):
         self.directory = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "Ki"
         self.preference_path = self.directory / "opencode_monitor_enabled.json"
         self.bridge_path = self.directory / "opencode_monitor.json"
+        self.plugin_source = APP_DIR / ".opencode" / "plugins" / "ki-agent-bridge.js"
+        self.plugin_path = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "opencode" / "plugins" / "ki-agent-bridge.js"
         self.events = queue.Queue(maxsize=40)
         self.activity_history = []
+        self.sessions = {}
+        self.pending_permissions = {}
+        self.commands = queue.Queue(maxsize=20)
+        self._command_results = {}
         self._activity_lock = threading.Lock()
+        self._command_lock = threading.Lock()
         self.server = None
         self.server_thread = None
         try:
@@ -431,11 +439,14 @@ class OpenCodeMonitor:
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 if self.path != "/event":
-                    self.send_error(404)
+                    if self.path == "/command-result":
+                        self._receive_command_result()
+                    else:
+                        self.send_error(404)
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if length < 1 or length > 1024:
+                    if length < 1 or length > 24_000:
                         self.send_error(413)
                         return
                     body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -450,10 +461,11 @@ class OpenCodeMonitor:
                 if event_type not in monitor.ALLOWED_EVENTS:
                     self.send_error(400)
                     return
-                record = {"type": event_type, "time": time.time()}
-                with monitor._activity_lock:
-                    monitor.activity_history.append(record)
-                    del monitor.activity_history[:-100]
+                try:
+                    record = monitor._record_event(body)
+                except ValueError:
+                    self.send_error(400)
+                    return
                 try:
                     monitor.events.put_nowait(record)
                 except queue.Full:
@@ -465,22 +477,86 @@ class OpenCodeMonitor:
                 self.send_response(204)
                 self.end_headers()
 
+            def _receive_command_result(self):
+                auth = self.headers.get("Authorization", "")
+                if not hmac.compare_digest(auth, "Bearer " + token):
+                    self.send_error(403)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length < 1 or length > 24_000:
+                        self.send_error(413)
+                        return
+                    result = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_error(400)
+                    return
+                if not isinstance(result, dict) or not isinstance(result.get("request_id"), str):
+                    self.send_error(400)
+                    return
+                monitor.complete_command(result["request_id"], result)
+                self.send_response(204)
+                self.end_headers()
+
+            def do_GET(self):
+                if self.path != "/command":
+                    self.send_error(404)
+                    return
+                auth = self.headers.get("Authorization", "")
+                if not hmac.compare_digest(auth, "Bearer " + token):
+                    self.send_error(403)
+                    return
+                command = monitor.next_command()
+                if command is None:
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                payload = json.dumps(command).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(payload)
+
             def log_message(self, format, *args):
                 return
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="KiOpenCodeMonitor")
         self.server_thread.start()
+        plugin_installed = False
         try:
-            self.bridge_path.write_text(json.dumps({"port": self.server.server_port, "token": token}), encoding="utf-8")
-            self.preference_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+            self._install_plugin()
+            plugin_installed = True
+            self.bridge_path.write_text(
+                json.dumps({"port": self.server.server_port, "token": token, "protocol": 2}),
+                encoding="utf-8",
+            )
+            plugin_hash = hashlib.sha256(self.plugin_source.read_bytes()).hexdigest()
+            self.preference_path.write_text(
+                json.dumps({"enabled": True, "plugin_sha256": plugin_hash}),
+                encoding="utf-8",
+            )
         except OSError:
             self._close_server()
+            if plugin_installed:
+                self._remove_plugin(hashlib.sha256(self.plugin_source.read_bytes()).hexdigest())
             raise
 
     def disable(self):
-        self.preference_path.unlink(missing_ok=True)
+        try:
+            preference = json.loads(self.preference_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            preference = {}
+        if not isinstance(preference, dict):
+            preference = {}
         self._close_server()
+        try:
+            self._remove_plugin(preference.get("plugin_sha256"))
+        finally:
+            self.preference_path.unlink(missing_ok=True)
 
     def close_server(self):
         """Stop this process's listener while preserving the user's opt-in choice."""
@@ -518,6 +594,217 @@ class OpenCodeMonitor:
         """Return a bounded, in-memory event history without session content."""
         with self._activity_lock:
             return list(self.activity_history)
+
+    def _install_plugin(self):
+        source_bytes = self.plugin_source.read_bytes()
+        source = source_bytes.decode("utf-8")
+        if self.plugin_path.exists():
+            existing_bytes = self.plugin_path.read_bytes()
+            try:
+                previous = json.loads(self.preference_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+            if not isinstance(previous, dict):
+                previous = {}
+            previous_hash = previous.get("plugin_sha256")
+            existing_hash = hashlib.sha256(existing_bytes).hexdigest()
+            if existing_bytes != source_bytes and existing_hash != previous_hash:
+                raise OSError(f"Ki cannot safely install its OpenCode plugin because this file already exists: {self.plugin_path}")
+        self.plugin_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                delete=False,
+                dir=str(self.plugin_path.parent),
+                prefix=".ki-agent-bridge-",
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(source)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, self.plugin_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    def _remove_plugin(self, expected_hash=None):
+        try:
+            if not self.plugin_path.is_file():
+                return
+            existing = self.plugin_path.read_bytes()
+            existing_hash = hashlib.sha256(existing).hexdigest()
+            source_hash = hashlib.sha256(self.plugin_source.read_bytes()).hexdigest()
+            if existing_hash == expected_hash or existing_hash == source_hash:
+                self.plugin_path.unlink()
+            elif self.PLUGIN_MARKER in existing.decode("utf-8", errors="replace"):
+                raise OSError(f"Ki left its OpenCode plugin in place because it was modified: {self.plugin_path}")
+        except OSError:
+            raise
+
+    @staticmethod
+    def _limited_text(value, limit=500):
+        return value[:limit] if isinstance(value, str) else ""
+
+    def _record_event(self, payload):
+        event_type = payload.get("type")
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 200:
+            raise ValueError("OpenCode event is missing a valid session ID.")
+        record = {
+            "type": event_type,
+            "session_id": session_id,
+            "time": time.time(),
+        }
+        title = self._limited_text(payload.get("session_title"), 300)
+        project = self._limited_text(payload.get("project_name"), 120)
+        status = self._limited_text(payload.get("status"), 80)
+        tool = self._limited_text(payload.get("tool_name"), 120)
+        if title:
+            record["session_title"] = title
+        if project:
+            record["project_name"] = project
+        if status:
+            record["status"] = status
+        if tool:
+            record["tool"] = tool
+        with self._activity_lock:
+            session = self.sessions.setdefault(session_id, {
+                "id": session_id,
+                "title": "",
+                "project": "",
+                "status": "unknown",
+                "updated_at": record["time"],
+            })
+            if title:
+                session["title"] = title
+            if project:
+                session["project"] = project
+            if status:
+                session["status"] = status
+            elif event_type == "session.idle":
+                session["status"] = "idle"
+            elif event_type == "session.error":
+                session["status"] = "error"
+            elif event_type in {"session.created", "tool.execute.before"}:
+                session["status"] = "working"
+            session["updated_at"] = record["time"]
+            if event_type == "permission.asked":
+                permission_id = payload.get("permission_id")
+                permission_title = self._limited_text(payload.get("permission_title"), 500)
+                permission_type = self._limited_text(payload.get("permission_type"), 100)
+                raw_patterns = payload.get("permission_patterns", [])
+                patterns = [
+                    self._limited_text(pattern, 300)
+                    for pattern in raw_patterns[:12]
+                    if isinstance(pattern, str)
+                ] if isinstance(raw_patterns, list) else []
+                if isinstance(permission_id, str) and permission_id and len(permission_id) <= 200:
+                    pending = {
+                        "id": permission_id,
+                        "session_id": session_id,
+                        "title": permission_title or "OpenCode permission request",
+                        "type": permission_type,
+                        "patterns": patterns,
+                        "time": record["time"],
+                    }
+                    self.pending_permissions[permission_id] = pending
+                    record["permission"] = dict(pending)
+            elif event_type == "permission.replied":
+                permission_id = payload.get("permission_id")
+                if isinstance(permission_id, str):
+                    self.pending_permissions.pop(permission_id, None)
+            self.activity_history.append(record)
+            del self.activity_history[:-100]
+            if len(self.sessions) > 50:
+                oldest_id = min(self.sessions, key=lambda key: self.sessions[key]["updated_at"])
+                self.sessions.pop(oldest_id, None)
+        return record
+
+    def agent_snapshot(self):
+        with self._activity_lock:
+            cutoff = time.time() - 15 * 60
+            self.pending_permissions = {
+                permission_id: permission
+                for permission_id, permission in self.pending_permissions.items()
+                if permission["time"] >= cutoff
+            }
+            return {
+                "enabled": self.enabled,
+                "sessions": sorted(
+                    (dict(session) for session in self.sessions.values()),
+                    key=lambda session: session["updated_at"],
+                    reverse=True,
+                ),
+                "events": [dict(event) for event in self.activity_history[-40:]],
+                "permissions": [dict(permission) for permission in self.pending_permissions.values()],
+            }
+
+    def has_session(self, session_id):
+        with self._activity_lock:
+            return session_id in self.sessions
+
+    def has_pending_permission(self, session_id, permission_id):
+        with self._activity_lock:
+            permission = self.pending_permissions.get(permission_id)
+            if permission is None or permission["time"] < time.time() - 15 * 60:
+                self.pending_permissions.pop(permission_id, None)
+                return False
+            return permission["session_id"] == session_id
+
+    def next_command(self):
+        try:
+            return self.commands.get_nowait()
+        except queue.Empty:
+            return None
+
+    def complete_command(self, request_id, result):
+        with self._command_lock:
+            pending = self._command_results.get(request_id)
+            if pending is None:
+                return
+            pending["result"] = result
+            pending["event"].set()
+
+    def cancel_pending_commands(self):
+        with self._command_lock:
+            pending_commands = list(self._command_results.values())
+            self._command_results.clear()
+            for pending in pending_commands:
+                pending["result"] = {"ok": False, "error": "Phone access was disabled."}
+                pending["event"].set()
+        while True:
+            try:
+                self.commands.get_nowait()
+            except queue.Empty:
+                break
+
+    def request_command(self, command, timeout=25):
+        request_id = secrets.token_urlsafe(18)
+        pending = {"event": threading.Event(), "result": None}
+        with self._command_lock:
+            self._command_results[request_id] = pending
+        try:
+            self.commands.put({"request_id": request_id, **command}, timeout=1)
+        except queue.Full as error:
+            with self._command_lock:
+                self._command_results.pop(request_id, None)
+            raise ValueError("OpenCode is busy. Try again in a moment.") from error
+        if not pending["event"].wait(timeout):
+            with self._command_lock:
+                self._command_results.pop(request_id, None)
+            raise TimeoutError("OpenCode did not respond. Make sure an OpenCode session is running and try again.")
+        with self._command_lock:
+            self._command_results.pop(request_id, None)
+        result = pending["result"]
+        if not isinstance(result, dict):
+            raise ValueError("OpenCode returned an invalid response.")
+        if result.get("ok") is not True:
+            message = self._limited_text(result.get("error"), 500) or "OpenCode could not complete the request."
+            raise ValueError(message)
+        return result
 
 def start_local_ollama(timeout=18.0):
     with _OLLAMA_START_LOCK:

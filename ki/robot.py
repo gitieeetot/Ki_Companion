@@ -75,6 +75,7 @@ class RobotWidget(QWidget):
         self.chat.music_state_callback = self.set_music_singing
         self.agent_monitor = OpenCodeMonitor()
         self.phone_bridge = PhoneCompanionServer()
+        self.phone_bridge.agent_monitor = self.agent_monitor
         self.phone_bridge.chat_received.connect(self.chat.show_phone_conversation)
         self.phone_bridge.speak_requested.connect(self.chat.speak_phone_reply)
         self.dashboard = DashboardWindow(self.chat, self.agent_monitor)
