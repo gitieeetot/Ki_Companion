@@ -3,6 +3,63 @@ from __future__ import annotations
 from .shared import *
 
 _OLLAMA_START_LOCK = threading.Lock()
+OLLAMA_MODEL_LOCK = threading.Lock()
+_ACTIVE_OLLAMA_MODEL = None
+OLLAMA_TEXT_MODEL = "qwen3:1.7b"
+OLLAMA_VISION_MODEL = "moondream:latest"
+
+
+def activate_ollama_model(model):
+    """Unload the other Ki model when switching before activating the selection."""
+    global _ACTIVE_OLLAMA_MODEL
+    if _ACTIVE_OLLAMA_MODEL:
+        previous_models = [_ACTIVE_OLLAMA_MODEL]
+    else:
+        request = urllib.request.Request("http://127.0.0.1:11434/api/ps")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise ValueError("Update Ollama so Ki can safely manage loaded models when switching modes.") from error
+            raise
+        loaded = result.get("models") if isinstance(result, dict) else None
+        if not isinstance(loaded, list):
+            raise ValueError("Ollama returned a loaded-model list Ki could not read.")
+        loaded_names = {
+            name.casefold()
+            for item in loaded
+            if isinstance(item, dict)
+            for name in (item.get("name") or item.get("model"),)
+            if isinstance(name, str)
+        }
+        previous_models = [
+            known_model
+            for known_model in (OLLAMA_TEXT_MODEL, OLLAMA_VISION_MODEL)
+            if known_model != model and known_model.casefold() in loaded_names
+        ]
+    for previous_model in dict.fromkeys(previous_models):
+        if previous_model == model:
+            continue
+        body = json.dumps({
+            "model": previous_model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": 0,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:11434/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30):
+                pass
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+    _ACTIVE_OLLAMA_MODEL = model
 
 class VoiceInputWorker(QThread):
     """Captures selected Windows audio sources in memory and transcribes offline."""
@@ -516,11 +573,12 @@ class ChatWorker(QThread):
     failed = Signal(str)
     status = Signal(str)
 
-    def __init__(self, messages, max_predict=256, stream=True):
+    def __init__(self, messages, max_predict=256, stream=True, model=OLLAMA_TEXT_MODEL):
         super().__init__()
         self.messages = messages
         self.max_predict = max_predict
         self.stream = stream
+        self.model = model
 
     def consume_stream(self, response):
         pieces = []
@@ -542,27 +600,33 @@ class ChatWorker(QThread):
         if not ready:
             self.failed.emit(message)
             return
-        body = json.dumps({
-            "model": "qwen3:1.7b",
-            "messages": self.messages,
-            "stream": self.stream,
-            "think": False,
-            "keep_alive": "5m",
-            "options": {"num_ctx": 4096, "num_predict": self.max_predict, "temperature": 0.7},
-        }).encode("utf-8")
-        request = urllib.request.Request(
-            "http://127.0.0.1:11434/api/chat",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=240) as response:
-                if self.stream:
-                    answer = self.consume_stream(response)
-                else:
-                    result = json.loads(response.read().decode("utf-8"))
-                    answer = result.get("message", {}).get("content", "").strip()
+            with OLLAMA_MODEL_LOCK:
+                activate_ollama_model(self.model)
+                body = json.dumps({
+                    "model": self.model,
+                    "messages": self.messages,
+                    "stream": self.stream,
+                    "think": False,
+                    "keep_alive": "5m",
+                    "options": {
+                        "num_ctx": 2048 if self.model == OLLAMA_VISION_MODEL else 4096,
+                        "num_predict": self.max_predict,
+                        "temperature": 0.7,
+                    },
+                }).encode("utf-8")
+                request = urllib.request.Request(
+                    "http://127.0.0.1:11434/api/chat",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=240) as response:
+                    if self.stream:
+                        answer = self.consume_stream(response)
+                    else:
+                        result = json.loads(response.read().decode("utf-8"))
+                        answer = result.get("message", {}).get("content", "").strip()
             if answer:
                 self.completed.emit(answer)
             else:
@@ -570,13 +634,18 @@ class ChatWorker(QThread):
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
             if error.code == 404 or "not found" in details.lower():
-                self.failed.emit("The local model qwen3:1.7b is not installed yet. Run: ollama run qwen3:1.7b")
+                self.failed.emit(
+                    f"The local model {self.model} is not installed yet. "
+                    f"Run: ollama pull {self.model}"
+                )
             else:
                 self.failed.emit(f"Ollama returned an error ({error.code}). Check that Ollama is running, then try again.")
         except (urllib.error.URLError, TimeoutError, OSError):
             self.failed.emit("Ollama stopped responding. Open the Ollama app, wait for it to start, then try again.")
         except (json.JSONDecodeError, KeyError, TypeError):
             self.failed.emit("Ollama returned a response Ki could not read. Please try again.")
+        except ValueError as error:
+            self.failed.emit(str(error))
 
 class WebSearchResultParser(HTMLParser):
     def __init__(self):

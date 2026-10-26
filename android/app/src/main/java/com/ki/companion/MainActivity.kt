@@ -3,8 +3,11 @@ package com.ki.companion
 import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -41,6 +44,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -67,14 +71,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.core.content.FileProvider
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.File
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
@@ -97,7 +107,7 @@ private val KiMuted = Color(0xFFA8B0B9)
 private val KiError = Color(0xFFFF9D94)
 
 private data class ChatMessage(val role: String, val content: String)
-private data class TextAttachment(val name: String, val contentBase64: String)
+private data class TextAttachment(val name: String, val contentBase64: String, val isImage: Boolean = false)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -143,6 +153,9 @@ private fun KiCompanionScreen(context: Context) {
     val voiceOutput = remember { mutableStateOf(preferences.getString("voice_output", "both") ?: "both") }
     val ttsReady = remember { mutableStateOf(false) }
     val attachment = remember { mutableStateOf<TextAttachment?>(null) }
+    val imageOcrText = remember { mutableStateOf("") }
+    val showImageTextReview = remember { mutableStateOf(false) }
+    val imageOcrBusy = remember { mutableStateOf(false) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -211,14 +224,18 @@ private fun KiCompanionScreen(context: Context) {
     }
 
     fun submitPrompt(prompt: String, selectedAttachment: TextAttachment? = null) {
-        if (prompt.isBlank() || busy.value) return
-        val chatMessages = messages.toList() + ChatMessage("user", prompt)
+        if ((prompt.isBlank() && selectedAttachment == null) || busy.value) return
+        val messageText = prompt.ifBlank {
+            if (selectedAttachment?.isImage == true) "Please describe this image."
+            else "Please review the attached file."
+        }
+        val chatMessages = messages.toList() + ChatMessage("user", messageText)
         val selectedOutput = voiceOutput.value
         val wasVoiceDraft = voiceDraft.value
         input.value = ""
         attachment.value = null
         voiceDraft.value = false
-        messages.add(ChatMessage("user", prompt))
+        messages.add(ChatMessage("user", messageText))
         status.value = "Ki is thinking…"
         statusIsError.value = false
         busy.value = true
@@ -257,6 +274,67 @@ private fun KiCompanionScreen(context: Context) {
             } finally {
                 busy.value = false
             }
+        }
+    }
+
+    fun readImageTextOnPhone() {
+        val selectedImage = attachment.value?.takeIf { it.isImage } ?: return
+        imageOcrBusy.value = true
+        status.value = "Reading text on Tot…"
+        statusIsError.value = false
+        scope.launch {
+            try {
+                val recognized = withContext(Dispatchers.IO) {
+                    recognizeImageText(selectedImage)
+                }
+                if (recognized.isBlank()) {
+                    status.value = "No readable text found. You can still send the image to Ki."
+                } else {
+                    imageOcrText.value = recognized
+                    showImageTextReview.value = true
+                    status.value = "Text found. Review it before sending to Ki."
+                }
+            } catch (error: Exception) {
+                status.value = error.message ?: "Tot could not read text from that image."
+                statusIsError.value = true
+            } finally {
+                imageOcrBusy.value = false
+            }
+        }
+    }
+
+    fun shareImageWithLens() {
+        val selectedImage = attachment.value?.takeIf { it.isImage } ?: return
+        try {
+            val imageFile = File(context.cacheDir, "shared-images/tot-image.jpg")
+            imageFile.parentFile?.mkdirs()
+            imageFile.writeBytes(Base64.getDecoder().decode(selectedImage.contentBase64))
+            val imageUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                imageFile,
+            )
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/jpeg"
+                putExtra(Intent.EXTRA_STREAM, imageUri)
+                clipData = ClipData.newUri(context.contentResolver, selectedImage.name, imageUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "Choose Google Lens or another image app"))
+            status.value = "Choose Google Lens in the Android share menu."
+            statusIsError.value = false
+        } catch (error: ActivityNotFoundException) {
+            status.value = "No app can open the Android image share menu."
+            statusIsError.value = true
+        } catch (error: IOException) {
+            status.value = error.message ?: "Could not prepare the image for Google Lens."
+            statusIsError.value = true
+        } catch (error: IllegalArgumentException) {
+            status.value = "Android could not share this image safely."
+            statusIsError.value = true
+        } catch (error: SecurityException) {
+            status.value = "Android did not allow sharing this image."
+            statusIsError.value = true
         }
     }
 
@@ -371,7 +449,7 @@ private fun KiCompanionScreen(context: Context) {
         if (uri != null) {
             scope.launch {
                 try {
-                    attachment.value = readTextAttachment(context, uri)
+                    attachment.value = readAttachment(context, uri)
                     status.value = "Attached ${attachment.value?.name}"
                     statusIsError.value = false
                 } catch (error: IOException) {
@@ -443,22 +521,97 @@ private fun KiCompanionScreen(context: Context) {
         }
 
         if (attachment.value != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(KiSurfaceRaised)
-                    .padding(start = 12.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "📎  ${attachment.value?.name}",
-                    color = KiText,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                )
-                TextButton(onClick = { attachment.value = null }) {
-                    Text("Remove", color = KiMuted)
+            val selectedAttachment = attachment.value
+            if (selectedAttachment?.isImage == true) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = KiSurfaceRaised),
+                    border = BorderStroke(1.dp, KiAccent.copy(alpha = 0.22f)),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Image ready", color = KiText, fontWeight = FontWeight.SemiBold)
+                                Text(selectedAttachment.name, color = KiMuted, fontSize = 11.sp, maxLines = 1)
+                            }
+                            TextButton(onClick = { attachment.value = null }) {
+                                Text("Remove", color = KiMuted)
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(
+                                enabled = !busy.value && !imageOcrBusy.value,
+                                onClick = { readImageTextOnPhone() },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                if (imageOcrBusy.value) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = KiAccent,
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Text("Read text", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                            TextButton(
+                                enabled = !busy.value && !imageOcrBusy.value,
+                                onClick = { shareImageWithLens() },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Google Lens", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        Button(
+                            enabled = !busy.value && !imageOcrBusy.value,
+                            onClick = {
+                                val prompt = input.value.trim().ifBlank {
+                                    "Please describe this image and help me identify anything important."
+                                }
+                                submitPrompt(prompt, selectedAttachment)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF3A6975),
+                                contentColor = KiText,
+                            ),
+                        ) {
+                            Text("Ask Ki about image · uses PC")
+                        }
+                        Text(
+                            "Read text stays on this phone. Sending the image to Ki uses your PC’s vision model.",
+                            color = KiMuted,
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(KiSurfaceRaised)
+                        .padding(start = 12.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "📎  ${selectedAttachment?.name}",
+                        color = KiText,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    TextButton(onClick = { attachment.value = null }) {
+                        Text("Remove", color = KiMuted)
+                    }
                 }
             }
         }
@@ -496,10 +649,10 @@ private fun KiCompanionScreen(context: Context) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 TextButton(
                     enabled = !busy.value,
-                    onClick = { filePicker.launch(arrayOf("text/*", "application/json")) },
-                ) { Text("＋", color = KiAccent, fontSize = 23.sp) }
+                    onClick = { filePicker.launch(arrayOf("text/*", "application/json", "image/*")) },
+                ) { Text("Attach", color = KiAccent, fontWeight = FontWeight.SemiBold) }
                 Button(
-                    enabled = !busy.value && input.value.isNotBlank(),
+                    enabled = !busy.value && (input.value.isNotBlank() || attachment.value != null),
                     onClick = { submitPrompt(input.value.trim(), attachment.value) },
                     shape = CircleShape,
                     contentPadding = ButtonDefaults.ContentPadding,
@@ -545,6 +698,50 @@ private fun KiCompanionScreen(context: Context) {
             color = KiMuted,
             fontSize = 11.sp,
             modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+    }
+
+    if (showImageTextReview.value) {
+        AlertDialog(
+            onDismissRequest = { showImageTextReview.value = false },
+            containerColor = KiSurface,
+            title = { Text("Review text from your image", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Recognized on Tot. Edit it if needed; only this text will be sent to Ki.",
+                        color = KiMuted,
+                        fontSize = 12.sp,
+                    )
+                    OutlinedTextField(
+                        value = imageOcrText.value,
+                        onValueChange = { imageOcrText.value = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 300.dp),
+                        maxLines = 10,
+                        colors = kiTextFieldColors(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy.value && imageOcrText.value.isNotBlank(),
+                    onClick = {
+                        val recognizedText = imageOcrText.value.trim()
+                        showImageTextReview.value = false
+                        attachment.value = null
+                        submitPrompt(
+                            "Please help me understand this text from my image:\n\n$recognizedText",
+                        )
+                    },
+                ) {
+                    Text("Send text to Ki", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImageTextReview.value = false }) {
+                    Text("Cancel", color = KiMuted)
+                }
+            },
         )
     }
 
@@ -1117,7 +1314,8 @@ private fun sendChat(
                 "attachment",
                 JSONObject()
                     .put("name", attachment.name)
-                    .put("content_base64", attachment.contentBase64),
+                    .put("content_base64", attachment.contentBase64)
+                    .put("kind", if (attachment.isImage) "image" else "text"),
             )
         }
     }
@@ -1166,11 +1364,65 @@ private fun describeNetworkError(error: Exception): String {
     return error.message?.takeIf { it.isNotBlank() } ?: "Could not connect. Check the PC address and pairing token."
 }
 
-private suspend fun readTextAttachment(context: Context, uri: Uri): TextAttachment = withContext(Dispatchers.IO) {
+private suspend fun readAttachment(context: Context, uri: Uri): TextAttachment = withContext(Dispatchers.IO) {
     val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         } ?: "attachment.txt"
+    val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    val imageAttachment = extension in setOf("jpg", "jpeg", "png", "webp") ||
+        context.contentResolver.getType(uri)?.startsWith("image/") == true
+    if (imageAttachment) {
+        val sourceBytes = context.contentResolver.openInputStream(uri)?.use { stream ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8_192)
+            var total = 0
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > 20_000_000) throw IOException("Choose an image smaller than 20 MB.")
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: throw IOException("Could not open the selected image.")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
+            bounds.outWidth.toLong() * bounds.outHeight.toLong() > 50_000_000L
+        ) {
+            throw IOException("That image is too large or could not be read.")
+        }
+        var sampleSize = 1
+        while (maxOf(bounds.outWidth / sampleSize, bounds.outHeight / sampleSize) > 1280) {
+            sampleSize *= 2
+        }
+        val bitmap = BitmapFactory.decodeByteArray(
+            sourceBytes,
+            0,
+            sourceBytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sampleSize },
+        ) ?: throw IOException("Android could not resize that image.")
+        try {
+            val output = java.io.ByteArrayOutputStream()
+            var quality = 82
+            do {
+                output.reset()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
+                quality -= 10
+            } while (output.size() > 1_500_000 && quality >= 42)
+            if (output.size() > 1_500_000) {
+                throw IOException("That image is still too large after resizing. Choose a smaller image.")
+            }
+            return@withContext TextAttachment(
+                name = if (extension in setOf("jpg", "jpeg", "png", "webp")) name else "tot-image.jpg",
+                contentBase64 = Base64.getEncoder().encodeToString(output.toByteArray()),
+                isImage = true,
+            )
+        } finally {
+            bitmap.recycle()
+        }
+    }
     val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
         val output = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(8_192)
@@ -1187,4 +1439,22 @@ private suspend fun readTextAttachment(context: Context, uri: Uri): TextAttachme
     val text = bytes.toString(Charsets.UTF_8)
     if (text.contains('\u0000')) throw IOException("Only UTF-8 text files are supported.")
     TextAttachment(name, Base64.getEncoder().encodeToString(bytes))
+}
+
+private suspend fun recognizeImageText(attachment: TextAttachment): String {
+    if (!attachment.isImage) throw IOException("Choose an image before reading text.")
+    val imageBytes = try {
+        Base64.getDecoder().decode(attachment.contentBase64)
+    } catch (error: IllegalArgumentException) {
+        throw IOException("The selected image could not be decoded.", error)
+    }
+    val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        ?: throw IOException("Tot could not open this image for text recognition.")
+    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    return try {
+        recognizer.process(InputImage.fromBitmap(bitmap, 0)).await().text.trim()
+    } finally {
+        recognizer.close()
+        bitmap.recycle()
+    }
 }
