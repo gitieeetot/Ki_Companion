@@ -25,14 +25,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -82,10 +76,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -157,6 +147,16 @@ private data class AgentEvent(
     val time: Long,
 )
 private data class SshConnectionInfo(val host: String, val username: String, val port: Int)
+private data class ProjectEntry(
+    val name: String,
+    val path: String,
+    val isDirectory: Boolean,
+    val sizeBytes: Long,
+    val editable: Boolean,
+)
+private data class ProjectDirectory(val path: String, val entries: List<ProjectEntry>)
+private data class ProjectFile(val path: String, val content: String, val sha256: String)
+private data class ProjectPreview(val diff: String, val sha256: String)
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -194,7 +194,13 @@ private fun KiCompanionScreen(context: Context) {
     val speechRecognizer = remember { mutableStateOf<SpeechRecognizer?>(null) }
     val voiceEditMessage = remember { mutableStateOf<ChatMessage?>(null) }
     val voiceEditText = remember { mutableStateOf("") }
+    val showConnectionsDialog = remember { mutableStateOf(false) }
     val showSshDialog = remember { mutableStateOf(false) }
+    val showProjectWorkspace = remember { mutableStateOf(false) }
+    val showVscodeTunnelDialog = remember { mutableStateOf(false) }
+    val vscodeTunnelUrl = remember {
+        mutableStateOf(preferences.getString("vscode_tunnel_url", "") ?: "")
+    }
     val sshUsername = remember { mutableStateOf(preferences.getString("ssh_username", "") ?: "") }
     val sshPort = remember { mutableStateOf(preferences.getString("ssh_port", "22") ?: "22") }
     val sshHost = remember { mutableStateOf(preferences.getString("ssh_host", "") ?: "") }
@@ -460,7 +466,9 @@ private fun KiCompanionScreen(context: Context) {
             if (!isAllowedPrivateBridgeAddress(hostAddress)) {
                 throw IOException("Use a private LAN or Tailscale IP from Ki's SSH QR.")
             }
-            val command = "ssh -p $port $username@$hostAddress"
+            val projectsCommand =
+                "powershell.exe -NoLogo -NoExit -Command \"New-Item -ItemType Directory -Force -Path (Join-Path ${'$'}env:USERPROFILE Projects) | Out-Null; Set-Location (Join-Path ${'$'}env:USERPROFILE Projects)\""
+            val command = "ssh -t -p $port $username@$hostAddress '$projectsCommand'"
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("PC SSH command", command))
             preferences.edit()
@@ -469,7 +477,7 @@ private fun KiCompanionScreen(context: Context) {
                 .putString("ssh_host", hostAddress)
                 .apply()
             context.startActivity(termuxIntent)
-            status.value = "SSH command copied. Paste it into Termux and review it before pressing Enter."
+            status.value = "SSH command copied. Paste it into Termux to open your laptop's Projects folder."
             statusIsError.value = false
             showSshDialog.value = false
         } catch (error: ActivityNotFoundException) {
@@ -1070,9 +1078,8 @@ private fun KiCompanionScreen(context: Context) {
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TotMark(Modifier.size(42.dp))
             Column(
-                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
                 Text("Tot", color = KiText, fontSize = 22.sp, fontWeight = FontWeight.Bold)
@@ -1111,38 +1118,22 @@ private fun KiCompanionScreen(context: Context) {
             },
         )
 
-        Row(
+        Button(
+            onClick = { showConnectionsDialog.value = true },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = KiSurfaceRaised,
+                contentColor = KiText,
+            ),
         ) {
-            OutlinedButton(
-                enabled = !busy.value,
-                onClick = { fetchVscodeSelection() },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, KiAccent.copy(alpha = 0.35f)),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
-            ) {
-                Text("VS Code", fontWeight = FontWeight.SemiBold)
-            }
-            OutlinedButton(
-                onClick = { showSshDialog.value = true },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFFE0A64B).copy(alpha = 0.45f)),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
-            ) {
-                Text("Termux SSH", fontWeight = FontWeight.SemiBold)
-            }
+            Text("Workspace & connections", fontWeight = FontWeight.SemiBold)
         }
 
         ConnectionStatusCard(
             status = status.value,
             isError = statusIsError.value,
             isThinking = busy.value,
-            onClick = {
-                showSettings.value = true
-            },
         )
 
         if (messages.isEmpty()) {
@@ -1392,6 +1383,186 @@ private fun KiCompanionScreen(context: Context) {
         )
     }
 
+    if (showConnectionsDialog.value) {
+        AlertDialog(
+            onDismissRequest = { showConnectionsDialog.value = false },
+            containerColor = KiSurface,
+            title = { Text("Workspace & connections", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text(
+                        "Browse and review edits to Projects in Tot, connect with Termux SSH, or open the full VS Code Tunnel in your phone browser.",
+                        color = KiMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Button(
+                        onClick = {
+                            showConnectionsDialog.value = false
+                            showSettings.value = true
+                            refreshChatModels()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = KiAccent, contentColor = Color(0xFF101417)),
+                    ) {
+                        Text(if (host.value.isBlank()) "Pair with Ki on PC" else "Manage Ki PC connection")
+                    }
+                    OutlinedButton(
+                        enabled = host.value.isNotBlank() && token.value.isNotBlank(),
+                        onClick = {
+                            showConnectionsDialog.value = false
+                            showProjectWorkspace.value = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+                    ) {
+                        Text("Browse Projects in Tot")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showConnectionsDialog.value = false
+                            showSshDialog.value = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+                    ) {
+                        Text("Termux SSH · open Projects")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showConnectionsDialog.value = false
+                            showVscodeTunnelDialog.value = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+                    ) {
+                        Text("Remote VS Code")
+                    }
+                    TextButton(
+                        enabled = !busy.value,
+                        onClick = {
+                            showConnectionsDialog.value = false
+                            fetchVscodeSelection()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Add copied VS Code selection to chat", color = KiAccent)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showConnectionsDialog.value = false }) {
+                    Text("Close", color = KiMuted)
+                }
+            },
+        )
+    }
+
+    if (showProjectWorkspace.value) {
+        ProjectWorkspaceDialog(
+            hostValue = host.value,
+            token = token.value,
+            onDismiss = { showProjectWorkspace.value = false },
+            onStatus = { message, isError ->
+                status.value = message
+                statusIsError.value = isError
+            },
+        )
+    }
+
+    if (showVscodeTunnelDialog.value) {
+        AlertDialog(
+            onDismissRequest = { showVscodeTunnelDialog.value = false },
+            containerColor = KiSurface,
+            title = { Text("Remote VS Code", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Connect with Termux SSH first. In the Projects folder, run `code tunnel --accept-server-license-terms --name TotLaptop` and sign in to GitHub when prompted. Copy the vscode.dev URL printed by the command. VS Code must be installed on the laptop and its `code` command available in PowerShell.",
+                        color = KiMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Text(
+                        "Paste that link below to open the full editor in your browser. The tunnel runs as your Windows account and can access files available to that account, not only Projects.",
+                        color = KiMuted,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    OutlinedTextField(
+                        value = vscodeTunnelUrl.value,
+                        onValueChange = {
+                            vscodeTunnelUrl.value = it.take(512)
+                            preferences.edit().putString("vscode_tunnel_url", it.take(512)).apply()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("VS Code Tunnel URL") },
+                        placeholder = { Text("https://vscode.dev/tunnel/...") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        colors = kiTextFieldColors(),
+                    )
+                    if (vscodeTunnelUrl.value.isNotBlank() && parseVscodeTunnelUrl(vscodeTunnelUrl.value) == null) {
+                        Text(
+                            "Paste the HTTPS vscode.dev/tunnel link printed by code tunnel.",
+                            color = KiError,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Text(
+                        "Keep your PC awake and online. VS Code Tunnel uses your GitHub sign-in; Termux SSH remains available for terminal access.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = parseVscodeTunnelUrl(vscodeTunnelUrl.value) != null,
+                    onClick = {
+                        val tunnelUri = parseVscodeTunnelUrl(vscodeTunnelUrl.value)
+                        if (tunnelUri == null) {
+                            status.value = "Paste the HTTPS vscode.dev/tunnel link printed by code tunnel."
+                            statusIsError.value = true
+                            return@TextButton
+                        }
+                        try {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, tunnelUri),
+                            )
+                            showVscodeTunnelDialog.value = false
+                            status.value = "Opened the remote VS Code tunnel in your browser."
+                            statusIsError.value = false
+                        } catch (error: ActivityNotFoundException) {
+                            status.value = "No browser is available to open VS Code Tunnel."
+                            statusIsError.value = true
+                        } catch (error: SecurityException) {
+                            status.value = "Android blocked opening VS Code Tunnel."
+                            statusIsError.value = true
+                        }
+                    },
+                ) {
+                    Text("Open VS Code Tunnel", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showVscodeTunnelDialog.value = false
+                        showSshDialog.value = true
+                    },
+                ) {
+                    Text("Set up SSH", color = KiMuted)
+                }
+            },
+        )
+    }
+
     if (showSshDialog.value) {
         AlertDialog(
             onDismissRequest = { showSshDialog.value = false },
@@ -1400,7 +1571,7 @@ private fun KiCompanionScreen(context: Context) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Scan the SSH QR shown in Ki's phone companion, or use the PC address from pairing. Tot copies the command and opens Termux; review and run it yourself. Your PC must have OpenSSH Server enabled and be reachable on your private network or Tailscale.",
+                        "Scan the separate SSH QR from Ki, or use the PC address from pairing. Tot copies a command that opens Termux and creates/opens %USERPROFILE%\\Projects on the PC. Paste and review it before running. OpenSSH Server must be enabled and reachable on your private network or Tailscale.",
                         color = KiMuted,
                         fontSize = 11.sp,
                         lineHeight = 16.sp,
@@ -2240,6 +2411,353 @@ private fun KiCompanionScreen(context: Context) {
     }
 }
 
+@Composable
+private fun ProjectWorkspaceDialog(
+    hostValue: String,
+    token: String,
+    onDismiss: () -> Unit,
+    onStatus: (String, Boolean) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val currentDirectory = remember { mutableStateOf("") }
+    val entries = remember { mutableStateListOf<ProjectEntry>() }
+    val currentFile = remember { mutableStateOf<ProjectFile?>(null) }
+    val editedContent = remember { mutableStateOf("") }
+    val preview = remember { mutableStateOf<ProjectPreview?>(null) }
+    val stage = remember { mutableStateOf("browse") }
+    val loading = remember { mutableStateOf(false) }
+    val problem = remember { mutableStateOf("") }
+
+    fun loadDirectory(path: String) {
+        if (loading.value) return
+        loading.value = true
+        problem.value = ""
+        scope.launch {
+            try {
+                val directory = withContext(Dispatchers.IO) {
+                    fetchProjectDirectory(hostValue, token, path)
+                }
+                currentDirectory.value = directory.path
+                entries.clear()
+                entries.addAll(directory.entries)
+                currentFile.value = null
+                preview.value = null
+                stage.value = "browse"
+            } catch (error: Exception) {
+                problem.value = describeNetworkError(error)
+                onStatus(problem.value, true)
+            } finally {
+                loading.value = false
+            }
+        }
+    }
+
+    fun openProjectFile(entry: ProjectEntry) {
+        if (loading.value || !entry.editable) return
+        loading.value = true
+        problem.value = ""
+        scope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    fetchProjectFile(hostValue, token, entry.path)
+                }
+                currentFile.value = file
+                editedContent.value = file.content
+                preview.value = null
+                stage.value = "edit"
+            } catch (error: Exception) {
+                problem.value = describeNetworkError(error)
+                onStatus(problem.value, true)
+            } finally {
+                loading.value = false
+            }
+        }
+    }
+
+    fun reviewChanges() {
+        val file = currentFile.value ?: return
+        if (loading.value) return
+        if (editedContent.value == file.content) {
+            problem.value = "There are no changes to review."
+            return
+        }
+        loading.value = true
+        problem.value = ""
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    previewProjectFile(hostValue, token, file, editedContent.value)
+                }
+                if (result.sha256 != file.sha256) {
+                    throw IOException("The file changed on the PC. Reload it before reviewing or saving.")
+                }
+                preview.value = result
+                stage.value = "review"
+            } catch (error: Exception) {
+                problem.value = describeNetworkError(error)
+                onStatus(problem.value, true)
+            } finally {
+                loading.value = false
+            }
+        }
+    }
+
+    fun saveReviewedChanges() {
+        val file = currentFile.value ?: return
+        val reviewed = preview.value ?: return
+        if (loading.value || editedContent.value == file.content || reviewed.sha256 != file.sha256) return
+        loading.value = true
+        problem.value = ""
+        scope.launch {
+            try {
+                val savedPath = withContext(Dispatchers.IO) {
+                    saveProjectFile(hostValue, token, file.path, editedContent.value, file.sha256)
+                }
+                onStatus("Saved ${savedPath} after reviewing the diff.", false)
+                currentFile.value = null
+                preview.value = null
+                stage.value = "browse"
+                try {
+                    val directory = withContext(Dispatchers.IO) {
+                        fetchProjectDirectory(hostValue, token, currentDirectory.value)
+                    }
+                    currentDirectory.value = directory.path
+                    entries.clear()
+                    entries.addAll(directory.entries)
+                } catch (error: Exception) {
+                    problem.value = "Saved the file, but could not refresh this folder: ${describeNetworkError(error)}"
+                    onStatus(problem.value, true)
+                }
+            } catch (error: Exception) {
+                problem.value = describeNetworkError(error)
+                onStatus(problem.value, true)
+            } finally {
+                loading.value = false
+            }
+        }
+    }
+
+    LaunchedEffect(hostValue, token) {
+        if (hostValue.isBlank() || token.isBlank()) {
+            problem.value = "Pair Tot with Ki before browsing Projects."
+        } else {
+            loadDirectory("")
+        }
+    }
+
+    when (stage.value) {
+        "edit" -> {
+            val file = currentFile.value
+            AlertDialog(
+                onDismissRequest = {},
+                containerColor = KiSurface,
+                title = { Text(file?.path ?: "Edit project file", color = KiText, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Changes stay on your phone until you review the diff and confirm saving. Tot edits existing UTF-8 text files only.",
+                            color = KiMuted,
+                            fontSize = 11.sp,
+                        )
+                        OutlinedTextField(
+                            value = editedContent.value,
+                            onValueChange = { editedContent.value = it },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 420.dp),
+                            minLines = 8,
+                            maxLines = 18,
+                            colors = kiTextFieldColors(),
+                        )
+                        if (problem.value.isNotBlank()) {
+                            Text(problem.value, color = KiError, fontSize = 11.sp)
+                        }
+                        if (loading.value) {
+                            CircularProgressIndicator(color = KiAccent, strokeWidth = 2.dp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = !loading.value, onClick = { reviewChanges() }) {
+                        Text("Review diff", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !loading.value,
+                        onClick = {
+                            currentFile.value = null
+                            preview.value = null
+                            stage.value = "browse"
+                            problem.value = ""
+                        },
+                    ) { Text("Discard edits", color = KiMuted) }
+                },
+            )
+        }
+        "review" -> {
+            val file = currentFile.value
+            val reviewed = preview.value
+            val diffLines = remember(reviewed?.diff) { reviewed?.diff?.lines().orEmpty() }
+            AlertDialog(
+                onDismissRequest = {
+                    if (!loading.value) stage.value = "edit"
+                },
+                containerColor = KiSurface,
+                title = { Text("Review before saving", color = KiText, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            file?.path.orEmpty(),
+                            color = KiMuted,
+                            fontSize = 11.sp,
+                        )
+                        if (reviewed?.diff.isNullOrBlank()) {
+                            Text("No changes to save.", color = KiMuted, fontSize = 12.sp)
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 420.dp),
+                            ) {
+                                itemsIndexed(diffLines) { _, line ->
+                                    Text(
+                                        line.ifEmpty { " " },
+                                        color = when {
+                                            line.startsWith("+++") || line.startsWith("---") -> KiAccent
+                                            line.startsWith("+") -> Color(0xFF9FE8B5)
+                                            line.startsWith("-") -> KiError
+                                            else -> KiText
+                                        },
+                                        fontSize = 10.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "Only confirm if this diff is what you intended. Tot checks again that the PC file has not changed.",
+                            color = KiMuted,
+                            fontSize = 11.sp,
+                        )
+                        if (problem.value.isNotBlank()) {
+                            Text(problem.value, color = KiError, fontSize = 11.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = !loading.value && !reviewed?.diff.isNullOrBlank(),
+                        onClick = { saveReviewedChanges() },
+                    ) { Text("Save reviewed diff", color = KiAccent, fontWeight = FontWeight.SemiBold) }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !loading.value,
+                        onClick = {
+                            stage.value = "edit"
+                            preview.value = null
+                            problem.value = ""
+                        },
+                    ) { Text("Back to editor", color = KiMuted) }
+                },
+            )
+        }
+        else -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                containerColor = KiSurface,
+                title = {
+                    Column {
+                        Text("Projects", color = KiText, fontWeight = FontWeight.Bold)
+                        Text(
+                            currentDirectory.value.ifBlank { "%USERPROFILE%\\Projects" },
+                            color = KiMuted,
+                            fontSize = 11.sp,
+                        )
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 500.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Only this folder is available. Most hidden files, Git metadata, and binary files are hidden. Files over 256 KB cannot be edited.",
+                            color = KiMuted,
+                            fontSize = 11.sp,
+                        )
+                        if (currentDirectory.value.isNotBlank()) {
+                            TextButton(
+                                enabled = !loading.value,
+                                onClick = {
+                                    loadDirectory(currentDirectory.value.substringBeforeLast('/', ""))
+                                },
+                            ) { Text("← Up", color = KiAccent) }
+                        }
+                        if (problem.value.isNotBlank()) {
+                            Text(problem.value, color = KiError, fontSize = 11.sp)
+                        }
+                        if (loading.value) {
+                            CircularProgressIndicator(color = KiAccent, strokeWidth = 2.dp)
+                        } else if (entries.isEmpty()) {
+                            Text("No supported folders or text files here yet.", color = KiMuted, fontSize = 12.sp)
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f, fill = false),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                itemsIndexed(entries, key = { _, entry -> entry.path }) { _, entry ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(KiBackground)
+                                            .clickable(enabled = !loading.value && (entry.isDirectory || entry.editable)) {
+                                                if (entry.isDirectory) {
+                                                    loadDirectory(entry.path)
+                                                } else {
+                                                    openProjectFile(entry)
+                                                }
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                entry.name,
+                                                color = if (entry.editable || entry.isDirectory) KiText else KiMuted,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            Text(
+                                                if (entry.isDirectory) "Folder" else formatProjectFileSize(entry.sizeBytes),
+                                                color = KiMuted,
+                                                fontSize = 10.sp,
+                                            )
+                                        }
+                                        Text(
+                                            if (entry.isDirectory) "Open" else if (entry.editable) "Edit" else "Too large",
+                                            color = KiAccent,
+                                            fontSize = 10.sp,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = onDismiss) { Text("Close", color = KiMuted) }
+                },
+            )
+        }
+    }
+}
+
 private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (String) -> Unit) {
     try {
         val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -2257,89 +2775,6 @@ private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (S
 }
 
 @Composable
-private fun TotMark(modifier: Modifier = Modifier) {
-    val animation = rememberInfiniteTransition(label = "tot-face")
-    val pulse = animation.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 850),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "tot-face-pulse",
-    )
-    Canvas(modifier = modifier) {
-        val panelLeft = size.width * 0.06f
-        val panelTop = size.height * 0.12f
-        val panelWidth = size.width * 0.88f
-        val panelHeight = size.height * 0.70f
-        val armSwing = (pulse.value - 0.5f) * size.height * 0.10f
-        val limbColor = KiAccent
-        val limbWidth = size.minDimension * 0.055f
-        val armY = panelTop + panelHeight * 0.63f
-        val handRadius = size.minDimension * 0.05f
-        drawLine(
-            limbColor,
-            Offset(panelLeft + panelWidth * 0.05f, armY),
-            Offset(panelLeft - size.width * 0.035f, armY - armSwing),
-            limbWidth,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawLine(
-            limbColor,
-            Offset(panelLeft + panelWidth * 0.95f, armY),
-            Offset(panelLeft + panelWidth + size.width * 0.035f, armY + armSwing),
-            limbWidth,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawCircle(limbColor, handRadius, Offset(panelLeft - size.width * 0.035f, armY - armSwing))
-        drawCircle(limbColor, handRadius, Offset(panelLeft + panelWidth + size.width * 0.035f, armY + armSwing))
-        val legTop = panelTop + panelHeight * 0.88f
-        val legBottom = size.height * 0.91f
-        val legOffset = panelWidth * 0.20f
-        drawLine(limbColor, Offset(size.width * 0.5f - legOffset, legTop), Offset(size.width * 0.5f - legOffset - armSwing * 0.18f, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-        drawLine(limbColor, Offset(size.width * 0.5f + legOffset, legTop), Offset(size.width * 0.5f + legOffset + armSwing * 0.18f, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-        drawLine(limbColor, Offset(size.width * 0.5f - legOffset - armSwing * 0.18f - handRadius, legBottom), Offset(size.width * 0.5f - legOffset - armSwing * 0.18f + handRadius, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-        drawLine(limbColor, Offset(size.width * 0.5f + legOffset + armSwing * 0.18f - handRadius, legBottom), Offset(size.width * 0.5f + legOffset + armSwing * 0.18f + handRadius, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-        drawRoundRect(
-            color = Color(0xFF303236),
-            topLeft = Offset(panelLeft, panelTop),
-            size = Size(panelWidth, panelHeight),
-            cornerRadius = CornerRadius(size.minDimension * 0.035f),
-        )
-        val eyeY = panelTop + panelHeight * 0.43f
-        val eyeRadius = size.minDimension * 0.045f
-        val blink = pulse.value > 0.94f
-        if (blink) {
-            drawLine(Color(0xFFF0F0F0), Offset(panelLeft + panelWidth * 0.30f - eyeRadius, eyeY), Offset(panelLeft + panelWidth * 0.30f + eyeRadius, eyeY), eyeRadius * 0.45f)
-            drawLine(Color(0xFFF0F0F0), Offset(panelLeft + panelWidth * 0.70f - eyeRadius, eyeY), Offset(panelLeft + panelWidth * 0.70f + eyeRadius, eyeY), eyeRadius * 0.45f)
-        } else {
-            drawCircle(Color(0xFFF0F0F0), eyeRadius, Offset(panelLeft + panelWidth * 0.30f, eyeY))
-            drawCircle(Color(0xFFF0F0F0), eyeRadius, Offset(panelLeft + panelWidth * 0.70f, eyeY))
-        }
-        val mouthY = panelTop + panelHeight * 0.66f
-        drawLine(
-            color = Color(0xFFF0F0F0),
-            start = Offset(panelLeft + panelWidth * 0.39f, mouthY),
-            end = Offset(panelLeft + panelWidth * 0.61f, mouthY),
-            strokeWidth = size.minDimension * 0.035f,
-        )
-        val ringCenter = Offset(size.width * 0.50f, size.height * 0.93f)
-        drawCircle(
-            color = Color(0xFFE0A64B).copy(alpha = 0.25f + pulse.value * 0.30f),
-            radius = size.minDimension * (0.105f + pulse.value * 0.025f),
-            center = ringCenter,
-        )
-        drawCircle(
-            color = Color(0xFFE0A64B),
-            radius = size.minDimension * 0.075f,
-            center = ringCenter,
-            style = Stroke(width = size.minDimension * 0.028f),
-        )
-    }
-}
-
-@Composable
 private fun TotWakeCard(
     isAwake: Boolean,
     canDisplayOverApps: Boolean,
@@ -2353,25 +2788,23 @@ private fun TotWakeCard(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(13.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TotMark(Modifier.size(48.dp))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Text(
-                    if (isAwake) "Tot is with you" else "Tot is taking a nap",
+                    if (isAwake) "Floating companion is awake" else "Floating companion is resting",
                     color = KiText,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
                     when {
-                        isAwake -> "Floating above your apps · tap to tuck him away"
-                        canDisplayOverApps -> "Bring your little buddy over other apps"
-                        else -> "Allow overlay access to wake Tot over other apps"
+                        isAwake -> "Visible above your apps · tap Let rest to hide it"
+                        canDisplayOverApps -> "Show the draggable companion over other apps"
+                        else -> "Allow overlay access to show the floating companion"
                     },
                     color = KiMuted,
                     fontSize = 10.sp,
@@ -2397,9 +2830,8 @@ private fun TotWakeCard(
 }
 
 @Composable
-private fun ConnectionStatusCard(status: String, isError: Boolean, isThinking: Boolean, onClick: () -> Unit) {
+private fun ConnectionStatusCard(status: String, isError: Boolean, isThinking: Boolean) {
     Card(
-        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = KiSurface),
@@ -2516,8 +2948,7 @@ private fun EmptyChatCard(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        TotMark(Modifier.size(62.dp))
-        Text("A little company, wherever you go.", color = KiText, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text("Chat with Ki from anywhere.", color = KiText, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "Connect to Ki on your PC, then send a message to start chatting.",
             color = KiMuted,
@@ -2652,6 +3083,27 @@ private fun parseSshQr(contents: String): SshConnectionInfo {
     return SshConnectionInfo(host, username, port)
 }
 
+private fun parseVscodeTunnelUrl(value: String): Uri? {
+    val uri = try {
+        URI(value.trim())
+    } catch (error: URISyntaxException) {
+        return null
+    }
+    if (
+        uri.scheme != "https" ||
+        uri.host != "vscode.dev" ||
+        uri.port !in listOf(-1, 443) ||
+        uri.rawUserInfo != null ||
+        uri.rawQuery != null ||
+        uri.rawFragment != null ||
+        !uri.rawPath.orEmpty().startsWith("/tunnel/") ||
+        uri.rawPath == "/tunnel/"
+    ) {
+        return null
+    }
+    return Uri.parse(uri.toASCIIString())
+}
+
 internal fun normalizeHost(value: String): String {
     val host = value.trim().trimEnd('/')
     if (host.isEmpty()) throw IOException("Enter the PC address shown in Ki's dashboard.")
@@ -2781,6 +3233,125 @@ private fun fetchVscodeContext(hostValue: String, token: String): String {
     } finally {
         connection.disconnect()
     }
+}
+
+private fun fetchProjectDirectory(hostValue: String, token: String, path: String): ProjectDirectory {
+    val response = requestProjectJson(
+        hostValue,
+        token,
+        "/api/projects?path=${Uri.encode(path)}",
+        "GET",
+    )
+    val entriesJson = response.optJSONArray("entries") ?: JSONArray()
+    val entries = (0 until entriesJson.length()).mapNotNull { index ->
+        val item = entriesJson.optJSONObject(index) ?: return@mapNotNull null
+        val name = item.optString("name")
+        val entryPath = item.optString("path")
+        if (name.isBlank() || entryPath.isBlank()) return@mapNotNull null
+        val isDirectory = item.optString("type") == "directory"
+        ProjectEntry(
+            name = name,
+            path = entryPath,
+            isDirectory = isDirectory,
+            sizeBytes = item.optLong("size"),
+            editable = isDirectory || item.optBoolean("editable"),
+        )
+    }
+    return ProjectDirectory(response.optString("path"), entries)
+}
+
+private fun fetchProjectFile(hostValue: String, token: String, path: String): ProjectFile {
+    val response = requestProjectJson(
+        hostValue,
+        token,
+        "/api/projects/file?path=${Uri.encode(path)}",
+        "GET",
+    )
+    val filePath = response.optString("path")
+    val content = response.optString("content")
+    val revision = response.optString("sha256")
+    if (filePath.isBlank() || !revision.matches(Regex("[a-fA-F0-9]{64}"))) {
+        throw IOException("Ki returned incomplete project file details.")
+    }
+    return ProjectFile(filePath, content, revision)
+}
+
+private fun previewProjectFile(
+    hostValue: String,
+    token: String,
+    file: ProjectFile,
+    content: String,
+): ProjectPreview {
+    val response = requestProjectJson(
+        hostValue,
+        token,
+        "/api/projects/preview",
+        "POST",
+        projectFileRequest(file, content),
+    )
+    val revision = response.optString("sha256")
+    if (!revision.matches(Regex("[a-fA-F0-9]{64}"))) {
+        throw IOException("Ki returned an invalid project file revision.")
+    }
+    return ProjectPreview(response.optString("diff"), revision)
+}
+
+private fun saveProjectFile(
+    hostValue: String,
+    token: String,
+    path: String,
+    content: String,
+    expectedSha256: String,
+): String {
+    val response = requestProjectJson(
+        hostValue,
+        token,
+        "/api/projects/save",
+        "POST",
+        JSONObject()
+            .put("path", path)
+            .put("content", content)
+            .put("expected_sha256", expectedSha256),
+    )
+    return response.optString("path").takeIf(String::isNotBlank)
+        ?: throw IOException("Ki saved the project file but returned no file path.")
+}
+
+private fun projectFileRequest(file: ProjectFile, content: String): JSONObject = JSONObject()
+    .put("path", file.path)
+    .put("content", content)
+    .put("expected_sha256", file.sha256)
+
+private fun requestProjectJson(
+    hostValue: String,
+    token: String,
+    route: String,
+    method: String,
+    body: JSONObject? = null,
+): JSONObject {
+    val connection = openConnection("${normalizeHost(hostValue)}$route", token, method)
+    try {
+        if (body != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        }
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) {
+            throw IOException(response.optString("error", "Project request failed (HTTP $code)."))
+        }
+        return response
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun formatProjectFileSize(sizeBytes: Long): String = when {
+    sizeBytes < 1_024 -> "$sizeBytes B"
+    sizeBytes < 1_024 * 1_024 -> "${sizeBytes / 1_024} KB"
+    else -> String.format(Locale.ROOT, "%.1f MB", sizeBytes / (1_024.0 * 1_024))
 }
 
 private fun chatModelLabel(model: ChatModel): String = listOf(

@@ -8,6 +8,15 @@ import socket
 import re
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+from .project_workspace import (
+    ProjectFileConflictError,
+    list_project_entries,
+    preview_project_file,
+    read_project_file,
+    save_project_file,
+)
 
 
 PHONE_BRIDGE_PORT = 8765
@@ -149,14 +158,14 @@ class PhoneCompanionServer(QObject):
                 supplied = self.headers.get("Authorization", "")
                 return hmac.compare_digest(supplied, "Bearer " + bridge._token)
 
-            def _rate_allowed(self):
+            def _rate_allowed(self, limit=12):
                 now = time.monotonic()
                 address = self.client_address[0]
                 with bridge._rate_lock:
                     requests = bridge._requests_by_address.setdefault(address, deque())
                     while requests and now - requests[0] > 60:
                         requests.popleft()
-                    if len(requests) >= 12:
+                    if len(requests) >= limit:
                         return False
                     requests.append(now)
                     if len(bridge._requests_by_address) > 100:
@@ -169,6 +178,41 @@ class PhoneCompanionServer(QObject):
                 return True
 
             def do_GET(self):
+                route = urlsplit(self.path)
+                if route.path in {"/api/projects", "/api/projects/file"}:
+                    if not self._authorized():
+                        self._send_json(401, {"error": "Pairing token is invalid."})
+                        return
+                    if not bridge.enabled:
+                        self._send_json(503, {"error": "Phone companion is disabled."})
+                        return
+                    if not self._rate_allowed(limit=60):
+                        self._send_json(429, {"error": "Too many project requests. Wait a minute and try again."})
+                        return
+                    try:
+                        query = parse_qs(route.query, keep_blank_values=True, max_num_fields=1)
+                        if set(query) - {"path"} or len(query.get("path", [""])) != 1:
+                            raise ValueError("The project path is invalid.")
+                        relative_path = query.get("path", [""])[0]
+                        result = (
+                            read_project_file(relative_path)
+                            if route.path == "/api/projects/file"
+                            else list_project_entries(relative_path)
+                        )
+                    except FileNotFoundError as error:
+                        self._send_json(404, {"error": str(error)})
+                        return
+                    except PermissionError as error:
+                        self._send_json(403, {"error": str(error)})
+                        return
+                    except (ValueError, UnicodeError) as error:
+                        self._send_json(400, {"error": str(error)})
+                        return
+                    except OSError:
+                        self._send_json(500, {"error": "Ki could not access that project file or folder."})
+                        return
+                    self._send_json(200, result)
+                    return
                 if self.path == "/api/vscode/context":
                     if not self._authorized():
                         self._send_json(401, {"error": "Pairing token is invalid."})
@@ -256,7 +300,13 @@ class PhoneCompanionServer(QObject):
                 })
 
             def do_POST(self):
-                if self.path not in {"/api/chat", "/api/agents/action", "/api/agents/git"}:
+                if self.path not in {
+                    "/api/chat",
+                    "/api/agents/action",
+                    "/api/agents/git",
+                    "/api/projects/preview",
+                    "/api/projects/save",
+                }:
                     self._send_json(404, {"error": "Not found."})
                     return
                 if not self._authorized():
@@ -283,6 +333,22 @@ class PhoneCompanionServer(QObject):
                     payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                     if not isinstance(payload, dict):
                         raise ValueError("Request must be a JSON object.")
+                    if self.path == "/api/projects/preview":
+                        result = preview_project_file(
+                            payload.get("path"),
+                            payload.get("content"),
+                            payload.get("expected_sha256"),
+                        )
+                        self._send_json(200, result)
+                        return
+                    if self.path == "/api/projects/save":
+                        result = save_project_file(
+                            payload.get("path"),
+                            payload.get("content"),
+                            payload.get("expected_sha256"),
+                        )
+                        self._send_json(200, result)
+                        return
                     if self.path == "/api/agents/git":
                         bridge._handle_agent_git(self, payload)
                         return
@@ -296,8 +362,20 @@ class PhoneCompanionServer(QObject):
                     selected_model = payload.get("model", OLLAMA_TEXT_MODEL)
                     if not isinstance(selected_model, str) or not PHONE_MODEL_NAME_RE.fullmatch(selected_model):
                         raise ValueError("Choose a valid locally installed chat model.")
+                except ProjectFileConflictError as error:
+                    self._send_json(409, {"error": str(error)})
+                    return
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, AttributeError) as error:
                     self._send_json(400, {"error": str(error)})
+                    return
+                except FileNotFoundError as error:
+                    self._send_json(404, {"error": str(error)})
+                    return
+                except PermissionError as error:
+                    self._send_json(403, {"error": str(error)})
+                    return
+                except OSError:
+                    self._send_json(500, {"error": "Ki could not save that project file."})
                     return
                 try:
                     answer = bridge._ask_local_model(messages, selected_model)
