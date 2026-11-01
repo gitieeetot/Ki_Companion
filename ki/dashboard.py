@@ -1300,7 +1300,7 @@ class DashboardWindow(QDialog):
         rows = [
             f"Ollama local service: {'Online' if ollama_ready else 'Offline'}",
             f"OpenCode launcher: {self._agent_tools['OpenCode launcher'] or 'Not found'}",
-            f"Project model: {'ollama/qwen3:1.7b (local)' if model_local else 'Local model not configured'}",
+            f"Project model: {'Local Ollama model configured' if model_local else 'Local model not configured'}",
             f"Monitoring: {'On' if self.agent_monitor and self.agent_monitor.enabled else 'Off'}",
         ]
         if self._agent_latest_event:

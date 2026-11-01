@@ -10,6 +10,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -136,6 +137,7 @@ private data class AgentSession(
     val title: String,
     val project: String,
     val status: String,
+    val gitAvailable: Boolean,
 )
 private data class AgentPermission(
     val id: String,
@@ -145,6 +147,7 @@ private data class AgentPermission(
     val patterns: List<String>,
 )
 private data class AgentMessage(val role: String, val content: String)
+private data class AgentGitResult(val status: String, val output: String)
 private data class AgentEvent(
     val type: String,
     val sessionId: String,
@@ -156,6 +159,11 @@ private data class AgentEvent(
 private data class SshConnectionInfo(val host: String, val username: String, val port: Int)
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val EXTRA_ALERT_SESSION = "opencode_alert_session"
+        const val EXTRA_ALERT_PERMISSION = "opencode_alert_permission"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(34, 42, 49)
@@ -192,7 +200,7 @@ private fun KiCompanionScreen(context: Context) {
     val sshHost = remember { mutableStateOf(preferences.getString("ssh_host", "") ?: "") }
     val chatModels = remember { mutableStateListOf<ChatModel>() }
     val selectedModel = remember {
-        mutableStateOf(preferences.getString("chat_model", "qwen3:1.7b") ?: "qwen3:1.7b")
+        mutableStateOf(preferences.getString("chat_model", "qwen3:0.6b") ?: "qwen3:0.6b")
     }
     val modelMenuExpanded = remember { mutableStateOf(false) }
     val modelLoading = remember { mutableStateOf(false) }
@@ -220,10 +228,25 @@ private fun KiCompanionScreen(context: Context) {
     val agentEvents = remember { mutableStateListOf<AgentEvent>() }
     val agentMessages = remember { mutableStateListOf<AgentMessage>() }
     val selectedAgent = remember { mutableStateOf<AgentSession?>(null) }
+    val lastLoadedAgentSessionId = remember { mutableStateOf("") }
+    val lastLoadedAgentIdleEvent = remember { mutableStateOf(0L) }
+    val agentGitStatus = remember { mutableStateOf("") }
+    val agentGitOutput = remember { mutableStateOf("") }
+    val pendingGitAction = remember { mutableStateOf<String?>(null) }
+    val gitCommitMessage = remember { mutableStateOf("") }
     val agentInput = remember { mutableStateOf("") }
     val agentBusy = remember { mutableStateOf(false) }
     val showAgentPanel = remember { mutableStateOf(false) }
     val confirmAgentPermission = remember { mutableStateOf<AgentPermission?>(null) }
+    val backgroundPermissionAlerts = remember {
+        mutableStateOf(preferences.getBoolean("background_permission_alerts", false))
+    }
+    val alertSessionId = remember {
+        mutableStateOf((context as? Activity)?.intent?.getStringExtra(MainActivity.EXTRA_ALERT_SESSION).orEmpty())
+    }
+    val alertPermissionId = remember {
+        mutableStateOf((context as? Activity)?.intent?.getStringExtra(MainActivity.EXTRA_ALERT_PERMISSION).orEmpty())
+    }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val phoneTts = remember(context) {
@@ -281,6 +304,15 @@ private fun KiCompanionScreen(context: Context) {
                 if (event == Lifecycle.Event.ON_RESUME) {
                     floatingTot.value = preferences.getBoolean(TotOverlayService.KEY_ENABLED, false)
                     overlayPermission.value = Settings.canDrawOverlays(context)
+                    if (
+                        backgroundPermissionAlerts.value &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        backgroundPermissionAlerts.value = false
+                        setBackgroundPermissionAlerts(context, false)
+                    }
                 }
             }
             activity.lifecycle.addObserver(observer)
@@ -493,6 +525,10 @@ private fun KiCompanionScreen(context: Context) {
                 }
                 agentMessages.clear()
                 agentMessages.addAll(loaded)
+                lastLoadedAgentSessionId.value = sessionId
+                lastLoadedAgentIdleEvent.value = agentEvents
+                    .filter { it.sessionId == sessionId && it.type == "session.idle" }
+                    .maxOfOrNull { it.time } ?: 0L
                 status.value = "OpenCode session refreshed"
             } catch (error: Exception) {
                 status.value = describeNetworkError(error)
@@ -503,7 +539,7 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
-    fun refreshAgentSessions() {
+    fun refreshAgentSessions(targetSessionId: String = "", targetPermissionId: String = "") {
         if (agentBusy.value) return
         agentBusy.value = true
         status.value = "Checking OpenCode sessions…"
@@ -520,17 +556,35 @@ private fun KiCompanionScreen(context: Context) {
                 agentEvents.clear()
                 agentEvents.addAll(snapshot.third)
                 val current = selectedAgent.value
-                val selected = agentSessions.firstOrNull { it.id == current?.id }
+                val selected = agentSessions.firstOrNull { it.id == targetSessionId }
+                    ?: agentSessions.firstOrNull { it.id == current?.id }
                     ?: agentSessions.firstOrNull()
+                if (current?.id != selected?.id) {
+                    agentGitStatus.value = ""
+                    agentGitOutput.value = ""
+                }
                 selectedAgent.value = selected
+                if (targetPermissionId.isNotBlank()) {
+                    confirmAgentPermission.value = agentPermissions.firstOrNull {
+                        it.id == targetPermissionId && it.sessionId == selected?.id
+                    }
+                }
+                showAgentPanel.value = true
                 if (selected != null) {
                     val loaded = withContext(Dispatchers.IO) {
                         fetchAgentMessages(host.value, token.value, selected.id)
                     }
                     agentMessages.clear()
                     agentMessages.addAll(loaded)
+                    lastLoadedAgentSessionId.value = selected.id
+                    lastLoadedAgentIdleEvent.value = agentEvents
+                        .filter { it.sessionId == selected.id && it.type == "session.idle" }
+                        .maxOfOrNull { it.time } ?: 0L
+                } else {
+                    agentMessages.clear()
+                    lastLoadedAgentSessionId.value = ""
+                    lastLoadedAgentIdleEvent.value = 0L
                 }
-                showAgentPanel.value = true
                 status.value = if (agentSessions.isEmpty()) {
                     "No OpenCode sessions seen yet. Start OpenCode with Ki's monitor enabled."
                 } else {
@@ -578,6 +632,10 @@ private fun KiCompanionScreen(context: Context) {
                     }
                     agentMessages.clear()
                     agentMessages.addAll(loaded)
+                    lastLoadedAgentSessionId.value = selected.id
+                    lastLoadedAgentIdleEvent.value = agentEvents
+                        .filter { it.sessionId == selected.id && it.type == "session.idle" }
+                        .maxOfOrNull { it.time } ?: 0L
                 }
                 agentInput.value = if (action == "prompt" || action == "answer") "" else agentInput.value
                 status.value = when (action) {
@@ -591,6 +649,41 @@ private fun KiCompanionScreen(context: Context) {
             } finally {
                 agentBusy.value = false
             }
+        }
+    }
+
+    fun runAgentGit(operation: String, commitMessage: String = "") {
+        val session = selectedAgent.value ?: return
+        if (agentBusy.value) return
+        agentBusy.value = true
+        status.value = "Running Git ${operation.replace('_', ' ')}…"
+        statusIsError.value = false
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    sendAgentGitAction(
+                        host.value,
+                        token.value,
+                        session.id,
+                        operation,
+                        commitMessage,
+                    )
+                }
+                agentGitStatus.value = result.status
+                agentGitOutput.value = result.output
+                status.value = "Git ${operation.replace('_', ' ')} completed"
+            } catch (error: Exception) {
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                agentBusy.value = false
+            }
+        }
+    }
+
+    LaunchedEffect(alertSessionId.value, alertPermissionId.value) {
+        if (alertSessionId.value.isNotBlank() && alertPermissionId.value.isNotBlank()) {
+            refreshAgentSessions(alertSessionId.value, alertPermissionId.value)
         }
     }
 
@@ -770,6 +863,41 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            backgroundPermissionAlerts.value = true
+            setBackgroundPermissionAlerts(context, true)
+            status.value = "Background OpenCode permission alerts enabled."
+            statusIsError.value = false
+        } else {
+            backgroundPermissionAlerts.value = false
+            status.value = "Android notification access was not granted; background alerts remain off."
+            statusIsError.value = true
+        }
+    }
+
+    fun setBackgroundAlerts(enabled: Boolean) {
+        if (
+            enabled &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        backgroundPermissionAlerts.value = enabled
+        setBackgroundPermissionAlerts(context, enabled)
+        status.value = if (enabled) {
+            "Background alerts are on; Android checks periodically and may delay them."
+        } else {
+            "Background OpenCode permission alerts are off."
+        }
+        statusIsError.value = false
+    }
+
     val qrScanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         val contents = result.contents ?: return@rememberLauncherForActivityResult
         try {
@@ -897,19 +1025,33 @@ private fun KiCompanionScreen(context: Context) {
                     val selected = agentSessions.firstOrNull { it.id == current?.id }
                         ?: agentSessions.firstOrNull()
                     selectedAgent.value = selected
-                    if (selected != null) {
+                    val latestIdleEvent = snapshot.third
+                        .filter { it.sessionId == selected?.id && it.type == "session.idle" }
+                        .maxOfOrNull { it.time } ?: 0L
+                    if (
+                        selected != null &&
+                        selected.status == "idle" &&
+                        latestIdleEvent > 0L &&
+                        (
+                            lastLoadedAgentSessionId.value != selected.id ||
+                                latestIdleEvent > lastLoadedAgentIdleEvent.value ||
+                                current?.status != "idle"
+                            )
+                    ) {
                         val loaded = withContext(Dispatchers.IO) {
                             fetchAgentMessages(host.value, token.value, selected.id)
                         }
                         agentMessages.clear()
                         agentMessages.addAll(loaded)
+                        lastLoadedAgentSessionId.value = selected.id
+                        lastLoadedAgentIdleEvent.value = latestIdleEvent
                     }
                 } catch (error: Exception) {
                     status.value = describeNetworkError(error)
                     statusIsError.value = true
                 }
             }
-            delay(4_000)
+            delay(8_000)
         }
     }
 
@@ -1387,6 +1529,24 @@ private fun KiCompanionScreen(context: Context) {
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Background permission alerts", color = KiText, fontSize = 12.sp)
+                            Text(
+                                "Optional; checks about every 15 minutes. Android or Tailscale may delay delivery. Tap an alert to review; nothing is auto-approved.",
+                                color = KiMuted,
+                                fontSize = 10.sp,
+                            )
+                        }
+                        Switch(
+                            checked = backgroundPermissionAlerts.value,
+                            onCheckedChange = { setBackgroundAlerts(it) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1410,6 +1570,10 @@ private fun KiCompanionScreen(context: Context) {
                                 .clickable(enabled = !agentBusy.value) {
                                     selectedAgent.value = session
                                     agentMessages.clear()
+                                    lastLoadedAgentSessionId.value = ""
+                                    lastLoadedAgentIdleEvent.value = 0L
+                                    agentGitStatus.value = ""
+                                    agentGitOutput.value = ""
                                     loadAgentMessages(session.id)
                                 },
                             shape = RoundedCornerShape(12.dp),
@@ -1461,6 +1625,85 @@ private fun KiCompanionScreen(context: Context) {
                                             else -> event.type.replace('.', ' ')
                                         }
                                         Text(activity, color = KiMuted, fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+                        Text("Git for this project", color = KiText, fontWeight = FontWeight.SemiBold)
+                        if (!selected.gitAvailable) {
+                            Text(
+                                "This OpenCode session has no verified local project folder.",
+                                color = KiMuted,
+                                fontSize = 11.sp,
+                            )
+                        } else {
+                            Text(
+                                "Git stays inside this session's project. Stage, commit, pull, and push each need your confirmation.",
+                                color = KiMuted,
+                                fontSize = 10.sp,
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = { runAgentGit("status") },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Status") }
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = { runAgentGit("diff") },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Review diff") }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = { pendingGitAction.value = "stage_all" },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Stage all") }
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = {
+                                        gitCommitMessage.value = ""
+                                        pendingGitAction.value = "commit"
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Commit") }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = { pendingGitAction.value = "pull" },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Pull") }
+                                OutlinedButton(
+                                    enabled = !agentBusy.value,
+                                    onClick = { pendingGitAction.value = "push" },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Push") }
+                            }
+                            if (agentGitStatus.value.isNotBlank()) {
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = KiBackground),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Text("Repository status", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        Text(agentGitStatus.value, color = KiText, fontSize = 10.sp)
+                                        if (agentGitOutput.value.isNotBlank()) {
+                                            Text(agentGitOutput.value, color = KiMuted, fontSize = 9.sp)
+                                        }
                                     }
                                 }
                             }
@@ -1600,6 +1843,62 @@ private fun KiCompanionScreen(context: Context) {
             },
             dismissButton = {
                 TextButton(onClick = { confirmAgentPermission.value = null }) {
+                    Text("Cancel", color = KiMuted)
+                }
+            },
+        )
+    }
+
+    pendingGitAction.value?.let { operation ->
+        val operationLabel = when (operation) {
+            "stage_all" -> "Stage all changes"
+            "commit" -> "Commit staged changes"
+            "pull" -> "Pull updates"
+            "push" -> "Push commits"
+            else -> "Run Git action"
+        }
+        AlertDialog(
+            onDismissRequest = { pendingGitAction.value = null },
+            containerColor = KiSurface,
+            title = { Text(operationLabel, color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (operation == "commit") {
+                        OutlinedTextField(
+                            value = gitCommitMessage.value,
+                            onValueChange = { if (it.length <= 200) gitCommitMessage.value = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Commit message") },
+                            singleLine = true,
+                            colors = kiTextFieldColors(),
+                        )
+                    }
+                    Text(
+                        when (operation) {
+                            "stage_all" -> "Stage all non-ignored changes in this repository?"
+                            "commit" -> "Commit only changes already staged in this repository?"
+                            "pull" -> "Pull the current branch using fast-forward only? Pull is blocked if the repository has local changes."
+                            "push" -> "Push the current branch to its configured upstream?"
+                            else -> "Continue with this Git action?"
+                        },
+                        color = KiMuted,
+                        fontSize = 12.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !agentBusy.value &&
+                        (operation != "commit" || gitCommitMessage.value.isNotBlank()),
+                    onClick = {
+                        val message = gitCommitMessage.value.trim()
+                        pendingGitAction.value = null
+                        runAgentGit(operation, message)
+                    },
+                ) { Text("Confirm", color = KiAccent, fontWeight = FontWeight.SemiBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingGitAction.value = null }) {
                     Text("Cancel", color = KiMuted)
                 }
             },
@@ -2353,7 +2652,7 @@ private fun parseSshQr(contents: String): SshConnectionInfo {
     return SshConnectionInfo(host, username, port)
 }
 
-private fun normalizeHost(value: String): String {
+internal fun normalizeHost(value: String): String {
     val host = value.trim().trimEnd('/')
     if (host.isEmpty()) throw IOException("Enter the PC address shown in Ki's dashboard.")
     if (!host.startsWith("http://")) throw IOException("Enter the full http:// address shown in Ki's dashboard.")
@@ -2513,6 +2812,7 @@ private fun fetchAgentSnapshot(hostValue: String, token: String): Triple<List<Ag
                 title = item.optString("title"),
                 project = item.optString("project"),
                 status = item.optString("status"),
+                gitAvailable = item.optBoolean("git_available"),
             )
         }
         val permissionsJson = response.optJSONArray("permissions") ?: JSONArray()
@@ -2614,13 +2914,45 @@ private fun sendAgentAction(
     }
 }
 
-private fun readResponse(connection: HttpURLConnection, status: Int): String {
+private fun sendAgentGitAction(
+    hostValue: String,
+    token: String,
+    sessionId: String,
+    operation: String,
+    commitMessage: String,
+): AgentGitResult {
+    val body = JSONObject().apply {
+        put("session_id", sessionId)
+        put("operation", operation)
+        if (commitMessage.isNotBlank()) put("commit_message", commitMessage)
+    }
+    val connection = openConnection("${normalizeHost(hostValue)}/api/agents/git", token, "POST")
+    try {
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) {
+            throw IOException(response.optString("error", "Git operation failed (HTTP $code)."))
+        }
+        return AgentGitResult(
+            status = response.optString("status"),
+            output = response.optString("output"),
+        )
+    } finally {
+        connection.disconnect()
+    }
+}
+
+internal fun readResponse(connection: HttpURLConnection, status: Int): String {
     val stream = if (status in 200..299) connection.inputStream else connection.errorStream
     return stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
         ?: throw IOException("Ki returned an empty response (HTTP $status).")
 }
 
-private fun openConnection(address: String, token: String, method: String): HttpURLConnection {
+internal fun openConnection(address: String, token: String, method: String): HttpURLConnection {
     val connection = URL(address).openConnection(Proxy.NO_PROXY) as HttpURLConnection
     connection.requestMethod = method
     connection.connectTimeout = 8_000

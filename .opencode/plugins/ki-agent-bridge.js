@@ -52,6 +52,7 @@ function eventPayload(event, directory) {
     session_id: sessionId(properties),
     session_title: info.title ?? properties.title ?? "",
     project_name: projectDirectory ? path.basename(projectDirectory) : "",
+    project_directory: projectDirectory,
     status: properties.status?.type ?? properties.status ?? "",
     tool_name: properties.tool ?? properties.name ?? "",
   };

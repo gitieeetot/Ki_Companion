@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from .shared import *
-from .services import ChatWorker, SpeechWorker, VoiceInputWorker, WebSearchWorker
+from .services import (
+    ChatWorker,
+    OLLAMA_QUALITY_MODEL,
+    OLLAMA_TEXT_MODEL,
+    OLLAMA_VISION_MODEL,
+    SpeechWorker,
+    VoiceInputWorker,
+    WebSearchWorker,
+)
 
 class ChatWindow(QDialog):
     def __init__(self, set_robot_state, react_robot):
@@ -277,7 +285,7 @@ class ChatWindow(QDialog):
         outer.insertLayout(1, self.project_controls)
         self.attachments = []
         self.vscode_context = ""
-        self.request_model = "qwen3:1.7b"
+        self.request_model = OLLAMA_TEXT_MODEL
         self.request_images = []
         self.request_image_web_search = False
         self.request_search_text = ""
@@ -294,6 +302,19 @@ class ChatWindow(QDialog):
         self.vscode_button = QPushButton("Code")
         self.vscode_button.setToolTip("Copy selected text from VS Code, then click here to share it with Ki")
         self.vscode_button.clicked.connect(self.attach_clipboard_code)
+        self.text_model_select = QComboBox()
+        self.text_model_select.addItem("Fast · Qwen3 0.6b", OLLAMA_TEXT_MODEL)
+        self.text_model_select.addItem("Quality · Qwen3 1.7b", OLLAMA_QUALITY_MODEL)
+        saved_model = str(self.preferences.value("models/text", OLLAMA_TEXT_MODEL))
+        saved_model_index = self.text_model_select.findData(saved_model)
+        self.text_model_select.setCurrentIndex(max(0, saved_model_index))
+        self.text_model_select.setToolTip("Use the faster small model for everyday questions or the stronger model for harder work.")
+        self.text_model_select.currentIndexChanged.connect(
+            lambda index: self.preferences.setValue(
+                "models/text",
+                self.text_model_select.itemData(index),
+            )
+        )
         self.vision_button = QPushButton("Vision off")
         self.vision_button.setCheckable(True)
         self.vision_button.setToolTip("Use the optional local vision model for the next chat request")
@@ -306,6 +327,10 @@ class ChatWindow(QDialog):
         )
         self.web_search_button.setAccessibleName("Internet search")
         self.web_search_button.toggled.connect(self.update_web_search_button)
+        model_controls = QHBoxLayout()
+        model_controls.addWidget(QLabel("Local model"))
+        model_controls.addWidget(self.text_model_select, 1)
+        outer.addLayout(model_controls)
         mode_controls = QHBoxLayout()
         mode_controls.addWidget(self.vscode_button)
         mode_controls.addWidget(self.vision_button)
@@ -1285,7 +1310,11 @@ class ChatWindow(QDialog):
         vscode_data = self.vscode_context
         self.request_has_project_context = bool(project_data)
         self.request_edit_mode = bool(not skip_project_context and self.project_edit_button.isChecked() and project_data)
-        self.request_model = "moondream:latest" if use_vision else "qwen3:1.7b"
+        self.request_model = (
+            OLLAMA_VISION_MODEL
+            if use_vision
+            else self.text_model_select.currentData() or OLLAMA_TEXT_MODEL
+        )
         self.request_images = image_payload
         self.request_search_text = text
         self.request_image_web_search = bool(image_payload and self.web_search_button.isChecked())
@@ -1351,7 +1380,7 @@ class ChatWindow(QDialog):
             ),
         })
         self.add_message("user", "Search the web about the attached image")
-        self.request_model = "qwen3:1.7b"
+        self.request_model = self.text_model_select.currentData() or OLLAMA_TEXT_MODEL
         self.request_images = []
         self.pending = QLabel("WEB SEARCH  /  Searching for information about the image…")
         self.pending.setStyleSheet("background:#303030; color:#d0d0d3; padding:12px 14px; border:1px solid #414141; border-radius:16px; font-size:12px;")

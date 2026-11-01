@@ -4,45 +4,44 @@ from .shared import *
 
 _OLLAMA_START_LOCK = threading.Lock()
 OLLAMA_MODEL_LOCK = threading.Lock()
-_ACTIVE_OLLAMA_MODEL = None
-OLLAMA_TEXT_MODEL = "qwen3:1.7b"
+OLLAMA_TEXT_MODEL = "qwen3:0.6b"
+OLLAMA_QUALITY_MODEL = "qwen3:1.7b"
 OLLAMA_VISION_MODEL = "moondream:latest"
 
 
 def activate_ollama_model(model, managed_models=None):
-    """Unload the previous Ki-managed model before activating the selection."""
-    global _ACTIVE_OLLAMA_MODEL
-    if _ACTIVE_OLLAMA_MODEL:
-        previous_models = [_ACTIVE_OLLAMA_MODEL]
-    else:
-        request = urllib.request.Request("http://127.0.0.1:11434/api/ps")
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                raise ValueError("Update Ollama so Ki can safely manage loaded models when switching modes.") from error
-            raise
-        loaded = result.get("models") if isinstance(result, dict) else None
-        if not isinstance(loaded, list):
-            raise ValueError("Ollama returned a loaded-model list Ki could not read.")
-        loaded_names = {
-            name.casefold(): name
-            for item in loaded
-            if isinstance(item, dict)
-            for name in (item.get("name") or item.get("model"),)
-            if isinstance(name, str)
-        }
-        managed_names = {
-            name.casefold()
-            for name in (managed_models or (OLLAMA_TEXT_MODEL, OLLAMA_VISION_MODEL))
-            if isinstance(name, str)
-        }
-        previous_models = [
-            loaded_name
-            for name, loaded_name in loaded_names.items()
-            if name in managed_names and name != model.casefold()
-        ]
+    """Unload other Ki-managed models before activating the selected model."""
+    request = urllib.request.Request("http://127.0.0.1:11434/api/ps")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise ValueError("Update Ollama so Ki can safely manage loaded models when switching modes.") from error
+        raise
+    loaded = result.get("models") if isinstance(result, dict) else None
+    if not isinstance(loaded, list):
+        raise ValueError("Ollama returned a loaded-model list Ki could not read.")
+    loaded_names = {
+        name.casefold(): name
+        for item in loaded
+        if isinstance(item, dict)
+        for name in (item.get("name") or item.get("model"),)
+        if isinstance(name, str)
+    }
+    managed_names = {
+        name.casefold()
+        for name in (
+            managed_models
+            or (OLLAMA_TEXT_MODEL, OLLAMA_QUALITY_MODEL, OLLAMA_VISION_MODEL)
+        )
+        if isinstance(name, str)
+    }
+    previous_models = [
+        loaded_name
+        for name, loaded_name in loaded_names.items()
+        if name in managed_names and name != model.casefold()
+    ]
     for previous_model in dict.fromkeys(previous_models):
         if previous_model.casefold() == model.casefold():
             continue
@@ -64,7 +63,6 @@ def activate_ollama_model(model, managed_models=None):
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
-    _ACTIVE_OLLAMA_MODEL = model
 
 class VoiceInputWorker(QThread):
     """Captures selected Windows audio sources in memory and transcribes offline."""
@@ -383,7 +381,10 @@ def opencode_project_config_status():
         config = json.loads((APP_DIR / "opencode.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return config.get("model") == "ollama/qwen3:1.7b"
+    return config.get("model") in {
+        f"ollama/{OLLAMA_TEXT_MODEL}",
+        f"ollama/{OLLAMA_QUALITY_MODEL}",
+    }
 
 def local_agent_tool_status():
     """Read local Ollama readiness and OpenCode installation/config without launching tools."""
@@ -665,6 +666,9 @@ class OpenCodeMonitor:
         }
         title = self._limited_text(payload.get("session_title"), 300)
         project = self._limited_text(payload.get("project_name"), 120)
+        project_directory = self._limited_text(payload.get("project_directory"), 2048)
+        if project_directory and ("\0" in project_directory or not Path(project_directory).is_absolute()):
+            project_directory = ""
         status = self._limited_text(payload.get("status"), 80)
         tool = self._limited_text(payload.get("tool_name"), 120)
         if title:
@@ -680,6 +684,7 @@ class OpenCodeMonitor:
                 "id": session_id,
                 "title": "",
                 "project": "",
+                "project_directory": "",
                 "status": "unknown",
                 "updated_at": record["time"],
             })
@@ -687,6 +692,8 @@ class OpenCodeMonitor:
                 session["title"] = title
             if project:
                 session["project"] = project
+            if project_directory:
+                session["project_directory"] = project_directory
             if status:
                 session["status"] = status
             elif event_type == "session.idle":
@@ -739,13 +746,33 @@ class OpenCodeMonitor:
             return {
                 "enabled": self.enabled,
                 "sessions": sorted(
-                    (dict(session) for session in self.sessions.values()),
+                    (
+                        {
+                            "id": session["id"],
+                            "title": session["title"],
+                            "project": session["project"],
+                            "status": session["status"],
+                            "updated_at": session["updated_at"],
+                            "git_available": bool(session.get("project_directory")),
+                        }
+                        for session in self.sessions.values()
+                    ),
                     key=lambda session: session["updated_at"],
                     reverse=True,
                 ),
                 "events": [dict(event) for event in self.activity_history[-40:]],
                 "permissions": [dict(permission) for permission in self.pending_permissions.values()],
             }
+
+    def repository_for_session(self, session_id):
+        with self._activity_lock:
+            session = self.sessions.get(session_id)
+            directory = session.get("project_directory") if session else None
+        if not directory:
+            raise ValueError("This OpenCode session has no verified local project folder.")
+        from .git_operations import resolve_repository
+
+        return resolve_repository(directory)
 
     def has_session(self, session_id):
         with self._activity_lock:
@@ -904,6 +931,7 @@ class ChatWorker(QThread):
                     "options": {
                         "num_ctx": 2048 if self.model == OLLAMA_VISION_MODEL else 4096,
                         "num_predict": self.max_predict,
+                        "num_thread": 2,
                         "temperature": 0.7,
                     },
                 }).encode("utf-8")

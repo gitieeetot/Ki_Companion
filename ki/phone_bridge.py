@@ -249,14 +249,14 @@ class PhoneCompanionServer(QObject):
                 self._send_json(200, {
                     "ok": True,
                     "name": "Ki",
-                    "model": "qwen3:1.7b",
+                    "model": OLLAMA_TEXT_MODEL,
                     "ollama_available": ollama_available,
                     "model_available": model_available,
                     "error": model_error,
                 })
 
             def do_POST(self):
-                if self.path not in {"/api/chat", "/api/agents/action"}:
+                if self.path not in {"/api/chat", "/api/agents/action", "/api/agents/git"}:
                     self._send_json(404, {"error": "Not found."})
                     return
                 if not self._authorized():
@@ -283,6 +283,9 @@ class PhoneCompanionServer(QObject):
                     payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                     if not isinstance(payload, dict):
                         raise ValueError("Request must be a JSON object.")
+                    if self.path == "/api/agents/git":
+                        bridge._handle_agent_git(self, payload)
+                        return
                     if self.path == "/api/agents/action":
                         bridge._handle_agent_action(self, payload)
                         return
@@ -405,6 +408,43 @@ class PhoneCompanionServer(QObject):
             else:
                 raise ValueError("That OpenCode phone action is not supported.")
         except (TimeoutError, ValueError) as error:
+            handler._send_json(503, {"error": str(error)})
+            return
+        handler._send_json(200, {"ok": True, **result})
+
+    def _handle_agent_git(self, handler, payload):
+        monitor = self.agent_monitor
+        if monitor is None or not monitor.enabled:
+            handler._send_json(503, {"error": "Enable the OpenCode monitor on Ki's PC first."})
+            return
+        session_id = payload.get("session_id")
+        if not self._valid_session_id(session_id) or not monitor.has_session(session_id):
+            handler._send_json(404, {"error": "Choose an active OpenCode session."})
+            return
+        operation = payload.get("operation")
+        if not isinstance(operation, str) or operation not in {
+            "status", "diff", "stage_all", "commit", "pull", "push",
+        }:
+            handler._send_json(400, {"error": "Choose a supported Git operation."})
+            return
+        message = payload.get("commit_message", "")
+        if operation == "commit" and (
+            not isinstance(message, str) or not message.strip() or len(message.strip()) > 200
+        ):
+            handler._send_json(400, {"error": "Enter a commit message between 1 and 200 characters."})
+            return
+        try:
+            repository = monitor.repository_for_session(session_id)
+            from .git_operations import run_git_operation
+
+            result = run_git_operation(repository, operation, message)
+        except TimeoutError as error:
+            handler._send_json(504, {"error": str(error)})
+            return
+        except ValueError as error:
+            handler._send_json(409, {"error": str(error)})
+            return
+        except OSError as error:
             handler._send_json(503, {"error": str(error)})
             return
         handler._send_json(200, {"ok": True, **result})
@@ -581,6 +621,7 @@ class PhoneCompanionServer(QObject):
                     "options": {
                         "num_ctx": 2048 if model == OLLAMA_VISION_MODEL else 4096,
                         "num_predict": 512,
+                        "num_thread": 2,
                         "temperature": 0.7,
                     },
                 }).encode("utf-8")
