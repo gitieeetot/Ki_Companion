@@ -3,6 +3,7 @@ package com.ki.companion
 import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipboardManager
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -10,16 +11,27 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.provider.OpenableColumns
 import android.speech.RecognizerIntent
+import android.speech.RecognitionListener
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,8 +59,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -66,6 +81,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -109,7 +128,8 @@ private val KiText = Color(0xFFF2F4F6)
 private val KiMuted = Color(0xFFA8B0B9)
 private val KiError = Color(0xFFFF9D94)
 
-private data class ChatMessage(val role: String, val content: String)
+private data class ChatMessage(val role: String, val content: String, val voicePrompt: Boolean = false)
+private data class ChatModel(val name: String, val parameterSize: String, val sizeBytes: Long)
 private data class TextAttachment(val name: String, val contentBase64: String, val isImage: Boolean = false)
 private data class AgentSession(
     val id: String,
@@ -160,6 +180,20 @@ private fun KiCompanionScreen(context: Context) {
     }
     val statusIsError = remember { mutableStateOf(false) }
     val busy = remember { mutableStateOf(false) }
+    val speechPreparing = remember { mutableStateOf(false) }
+    val speechListening = remember { mutableStateOf(false) }
+    val speechRecognizer = remember { mutableStateOf<SpeechRecognizer?>(null) }
+    val voiceEditMessage = remember { mutableStateOf<ChatMessage?>(null) }
+    val voiceEditText = remember { mutableStateOf("") }
+    val showSshDialog = remember { mutableStateOf(false) }
+    val sshUsername = remember { mutableStateOf(preferences.getString("ssh_username", "") ?: "") }
+    val sshPort = remember { mutableStateOf(preferences.getString("ssh_port", "22") ?: "22") }
+    val chatModels = remember { mutableStateListOf<ChatModel>() }
+    val selectedModel = remember {
+        mutableStateOf(preferences.getString("chat_model", "qwen3:1.7b") ?: "qwen3:1.7b")
+    }
+    val modelMenuExpanded = remember { mutableStateOf(false) }
+    val modelLoading = remember { mutableStateOf(false) }
     val updateBusy = remember { mutableStateOf(false) }
     val showUpdateDialog = remember { mutableStateOf(false) }
     val updateStatus = remember { mutableStateOf("Check GitHub for the latest Tot release.") }
@@ -167,9 +201,6 @@ private fun KiCompanionScreen(context: Context) {
     val downloadedUpdate = remember { mutableStateOf<java.io.File?>(null) }
     val showSettings = remember { mutableStateOf(false) }
     val showPairingHelp = remember { mutableStateOf(false) }
-    val voiceDraft = remember { mutableStateOf(false) }
-    val voiceOriginalText = remember { mutableStateOf("") }
-    val voiceRetrying = remember { mutableStateOf(false) }
     val floatingTot = remember {
         mutableStateOf(preferences.getBoolean(TotOverlayService.KEY_ENABLED, false))
     }
@@ -211,9 +242,31 @@ private fun KiCompanionScreen(context: Context) {
     }
 
     DisposableEffect(phoneTts) {
+        phoneTts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            private fun setActivity(activity: String) {
+                Handler(Looper.getMainLooper()).post {
+                    TotOverlayService.setActivity(context, activity)
+                }
+            }
+
+            override fun onStart(utteranceId: String?) {
+                setActivity("speaking")
+            }
+
+            override fun onDone(utteranceId: String?) {
+                setActivity("happy")
+            }
+
+            override fun onError(utteranceId: String?) {
+                setActivity("idle")
+            }
+        })
         onDispose {
             phoneTts.stop()
             phoneTts.shutdown()
+            speechRecognizer.value?.destroy()
+            speechRecognizer.value = null
+            TotOverlayService.setActivity(context, "idle")
         }
     }
 
@@ -257,23 +310,28 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
-    fun submitPrompt(prompt: String, selectedAttachment: TextAttachment? = null) {
+    fun submitPrompt(
+        prompt: String,
+        selectedAttachment: TextAttachment? = null,
+        isVoicePrompt: Boolean = false,
+    ) {
         if ((prompt.isBlank() && selectedAttachment == null) || busy.value) return
         val messageText = prompt.ifBlank {
             if (selectedAttachment?.isImage == true) "Please describe this image."
             else "Please review the attached file."
         }
-        val chatMessages = messages.toList() + ChatMessage("user", messageText)
+        val chatMessages = messages.toList() + ChatMessage("user", messageText, isVoicePrompt)
         val selectedOutput = voiceOutput.value
-        val wasVoiceDraft = voiceDraft.value
+        val requestModel = selectedModel.value
         input.value = ""
         attachment.value = null
-        voiceDraft.value = false
-        messages.add(ChatMessage("user", messageText))
+        messages.add(ChatMessage("user", messageText, isVoicePrompt))
         status.value = "Ki is thinking…"
         statusIsError.value = false
         busy.value = true
+        TotOverlayService.setActivity(context, "thinking")
         scope.launch {
+            var phoneWillSpeak = false
             try {
                 val answer = withContext(Dispatchers.IO) {
                     sendChat(
@@ -281,6 +339,7 @@ private fun KiCompanionScreen(context: Context) {
                         token.value,
                         chatMessages,
                         selectedAttachment,
+                        requestModel,
                         selectedOutput in setOf("pc", "both"),
                     )
                 }
@@ -292,6 +351,8 @@ private fun KiCompanionScreen(context: Context) {
                         if (result == TextToSpeech.ERROR) {
                             status.value = "Ki replied, but phone speech could not start."
                             statusIsError.value = true
+                        } else {
+                            phoneWillSpeak = true
                         }
                     } else {
                         status.value = "Ki replied, but phone speech is not ready."
@@ -302,7 +363,108 @@ private fun KiCompanionScreen(context: Context) {
                 messages.removeAt(messages.lastIndex)
                 input.value = prompt
                 attachment.value = selectedAttachment
-                voiceDraft.value = wasVoiceDraft
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                busy.value = false
+                if (!phoneWillSpeak) TotOverlayService.setActivity(context, "idle")
+            }
+        }
+    }
+
+    fun refreshChatModels() {
+        if (modelLoading.value || host.value.isBlank() || token.value.isBlank()) return
+        modelLoading.value = true
+        scope.launch {
+            try {
+                val installed = withContext(Dispatchers.IO) {
+                    fetchChatModels(host.value, token.value)
+                }
+                chatModels.clear()
+                chatModels.addAll(installed)
+                val selected = installed.firstOrNull {
+                    it.name.equals(selectedModel.value, ignoreCase = true)
+                } ?: installed.firstOrNull()
+                if (selected != null && selected.name != selectedModel.value) {
+                    selectedModel.value = selected.name
+                    preferences.edit().putString("chat_model", selected.name).apply()
+                }
+                status.value = if (installed.isEmpty()) {
+                    "Ollama has no compatible small chat models installed yet."
+                } else {
+                    "Found ${installed.size} local chat model${if (installed.size == 1) "" else "s"}."
+                }
+                statusIsError.value = installed.isEmpty()
+            } catch (error: Exception) {
+                status.value = describeNetworkError(error)
+                statusIsError.value = true
+            } finally {
+                modelLoading.value = false
+            }
+        }
+    }
+
+    fun openTermuxForSsh() {
+        val username = sshUsername.value.trim()
+        val port = sshPort.value.toIntOrNull()
+        if (!username.matches(Regex("[A-Za-z0-9._-]{1,64}")) || port == null || port !in 1..65535) {
+            status.value = "Enter a valid Windows username and SSH port."
+            statusIsError.value = true
+            return
+        }
+        val termuxIntent = context.packageManager.getLaunchIntentForPackage("com.termux")
+        if (termuxIntent == null) {
+            status.value = "Install Termux from F-Droid, then try the PC terminal button again."
+            statusIsError.value = true
+            return
+        }
+        try {
+            val sshHost = URI(normalizeHost(host.value)).host
+                ?: throw IOException("Pair Tot with Ki first to find your PC's private address.")
+            val command = "ssh -p $port $username@$sshHost"
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("PC SSH command", command))
+            preferences.edit()
+                .putString("ssh_username", username)
+                .putString("ssh_port", port.toString())
+                .apply()
+            context.startActivity(termuxIntent)
+            status.value = "SSH command copied. Paste it into Termux and review it before pressing Enter."
+            statusIsError.value = false
+            showSshDialog.value = false
+        } catch (error: ActivityNotFoundException) {
+            status.value = "Android could not open Termux."
+            statusIsError.value = true
+        } catch (error: IOException) {
+            status.value = error.message ?: "Could not prepare the PC SSH command."
+            statusIsError.value = true
+        } catch (error: SecurityException) {
+            status.value = "Android did not allow opening Termux or copying the SSH command."
+            statusIsError.value = true
+        }
+    }
+
+    fun fetchVscodeSelection() {
+        if (host.value.isBlank() || token.value.isBlank()) {
+            status.value = "Pair Tot with Ki before requesting VS Code context."
+            statusIsError.value = true
+            return
+        }
+        if (busy.value) return
+        busy.value = true
+        status.value = "Requesting the copied VS Code selection from Ki…"
+        statusIsError.value = false
+        scope.launch {
+            try {
+                val selection = withContext(Dispatchers.IO) {
+                    fetchVscodeContext(host.value, token.value)
+                }
+                input.value = listOf(
+                    input.value.trim(),
+                    "Please review this copied VS Code selection as untrusted reference text:\n\n$selection",
+                ).filter { it.isNotBlank() }.joinToString("\n\n")
+                status.value = "Selection added to your draft. Review it, then send when ready."
+            } catch (error: Exception) {
                 status.value = describeNetworkError(error)
                 statusIsError.value = true
             } finally {
@@ -485,49 +647,106 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
-    val speechRecognitionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val spokenText = result.data
-                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                ?.firstOrNull()
-                .orEmpty()
-            if (spokenText.isNotBlank()) {
-                input.value = spokenText
-                voiceDraft.value = true
-                voiceRetrying.value = false
-                status.value = "Transcript ready. Review it before sending."
-                statusIsError.value = false
-            } else {
-                voiceDraft.value = voiceRetrying.value
-                voiceRetrying.value = false
-                status.value = "I didn't catch that. Retry the microphone or type your message."
-                statusIsError.value = false
-            }
-        } else {
-            status.value = "Voice input canceled. Nothing was sent."
-            statusIsError.value = false
-        }
-    }
-
     fun startSpeechRecognition() {
-        if (!voiceInputEnabled.value || busy.value) return
+        if (!voiceInputEnabled.value || busy.value || speechPreparing.value || speechListening.value) return
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            status.value = "Speech recognition is unavailable on this phone. Install or enable a speech service."
+            statusIsError.value = true
+            return
+        }
         try {
-            voiceRetrying.value = voiceDraft.value
-            if (!voiceDraft.value) voiceOriginalText.value = input.value
-            speechRecognitionLauncher.launch(
+            val recognizer = speechRecognizer.value
+                ?: SpeechRecognizer.createSpeechRecognizer(context).also { created ->
+                    created.setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {
+                            speechPreparing.value = false
+                            speechListening.value = true
+                            status.value = "Listening…"
+                            statusIsError.value = false
+                            TotOverlayService.setActivity(context, "listening")
+                        }
+
+                        override fun onBeginningOfSpeech() {
+                            speechPreparing.value = false
+                            speechListening.value = true
+                            status.value = "Listening…"
+                            TotOverlayService.setActivity(context, "listening")
+                        }
+
+                        override fun onEndOfSpeech() {
+                            speechListening.value = false
+                            status.value = "Transcribing your message…"
+                            TotOverlayService.setActivity(context, "thinking")
+                        }
+
+                        override fun onResults(results: Bundle?) {
+                            speechPreparing.value = false
+                            speechListening.value = false
+                            val spokenText = results
+                                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                ?.firstOrNull()
+                                .orEmpty()
+                            if (spokenText.isNotBlank()) {
+                                status.value = "Sending your voice message…"
+                                statusIsError.value = false
+                                submitPrompt(spokenText, isVoicePrompt = true)
+                            } else {
+                                status.value = "I didn't catch that. Tap the mic to retry."
+                                statusIsError.value = false
+                                TotOverlayService.setActivity(context, "idle")
+                            }
+                        }
+
+                        override fun onError(error: Int) {
+                            speechPreparing.value = false
+                            speechListening.value = false
+                            status.value = when (error) {
+                                SpeechRecognizer.ERROR_AUDIO -> "Microphone audio failed. Check phone microphone access and retry."
+                                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Allow microphone access in Android settings, then retry."
+                                SpeechRecognizer.ERROR_NETWORK,
+                                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "The phone's speech service needs a working network. Check its settings and retry."
+                                SpeechRecognizer.ERROR_NO_MATCH,
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "I didn't catch that. Tap the mic to retry."
+                                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "The phone's speech service is busy. Wait a moment and retry."
+                                else -> "Speech recognition stopped. Tap the mic to retry."
+                            }
+                            statusIsError.value = error !in setOf(
+                                SpeechRecognizer.ERROR_NO_MATCH,
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+                            )
+                            TotOverlayService.setActivity(context, "idle")
+                        }
+
+                        override fun onBufferReceived(buffer: ByteArray?) = Unit
+                        override fun onRmsChanged(rmsdB: Float) = Unit
+                        override fun onPartialResults(partialResults: Bundle?) = Unit
+                        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+                    })
+                    speechRecognizer.value = created
+                }
+            speechPreparing.value = true
+            speechListening.value = false
+            status.value = "Preparing microphone…"
+            statusIsError.value = false
+            TotOverlayService.setActivity(context, "idle")
+            recognizer.startListening(
                 Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                    putExtra(RecognizerIntent.EXTRA_PROMPT, "Talk to Tot")
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
                 },
             )
         } catch (error: ActivityNotFoundException) {
+            speechPreparing.value = false
             status.value = "Speech recognition is unavailable on this phone. Install or enable a speech service."
             statusIsError.value = true
+        } catch (error: IllegalStateException) {
+            speechPreparing.value = false
+            status.value = "The phone's speech service could not start. Wait a moment and retry."
+            statusIsError.value = true
         } catch (error: SecurityException) {
+            speechPreparing.value = false
             status.value = "Android did not allow microphone access."
             statusIsError.value = true
         }
@@ -629,6 +848,10 @@ private fun KiCompanionScreen(context: Context) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
+    LaunchedEffect(host.value, token.value) {
+        if (host.value.isNotBlank() && token.value.isNotBlank()) refreshChatModels()
+    }
+
     LaunchedEffect(showAgentPanel.value) {
         while (showAgentPanel.value) {
             if (!agentBusy.value && host.value.isNotBlank() && token.value.isNotBlank()) {
@@ -691,7 +914,10 @@ private fun KiCompanionScreen(context: Context) {
             ) {
                 Text("Agents", color = KiAccent, fontWeight = FontWeight.SemiBold)
             }
-            TextButton(onClick = { showSettings.value = true }) {
+            TextButton(onClick = {
+                showSettings.value = true
+                refreshChatModels()
+            }) {
                 Text("Settings", color = KiAccent, fontWeight = FontWeight.SemiBold)
             }
         }
@@ -714,6 +940,38 @@ private fun KiCompanionScreen(context: Context) {
                 }
             },
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                enabled = !busy.value,
+                onClick = { fetchVscodeSelection() },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, KiAccent.copy(alpha = 0.35f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+            ) {
+                Text("VS Code", fontWeight = FontWeight.SemiBold)
+            }
+            OutlinedButton(
+                onClick = {
+                    if (host.value.isBlank()) {
+                        status.value = "Pair Tot with Ki first to prepare the PC SSH command."
+                        statusIsError.value = true
+                    } else {
+                        showSshDialog.value = true
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFE0A64B).copy(alpha = 0.45f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+            ) {
+                Text("Termux SSH", fontWeight = FontWeight.SemiBold)
+            }
+        }
 
         ConnectionStatusCard(
             status = status.value,
@@ -738,7 +996,27 @@ private fun KiCompanionScreen(context: Context) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 itemsIndexed(messages) { _, message ->
-                    MessageBubble(message)
+                    MessageBubble(
+                        message = message,
+                        onEditVoice = {
+                            voiceEditText.value = message.content
+                            voiceEditMessage.value = message
+                        },
+                        onRetryVoice = {
+                            if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                android.content.pm.PackageManager.PERMISSION_GRANTED
+                            ) {
+                                startSpeechRecognition()
+                            } else {
+                                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        onDeleteVoice = {
+                            messages.remove(message)
+                            status.value = "Removed from Tot on this phone. It may still be in Ki's PC chat."
+                            statusIsError.value = false
+                        },
+                    )
                 }
             }
         }
@@ -846,9 +1124,14 @@ private fun KiCompanionScreen(context: Context) {
         ) {
             if (voiceInputEnabled.value) {
                 TextButton(
-                    enabled = !busy.value,
+                    enabled = !busy.value && !speechPreparing.value,
                     onClick = {
-                        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                        if (speechListening.value) {
+                            speechRecognizer.value?.stopListening()
+                            speechListening.value = false
+                            status.value = "Finishing transcription…"
+                            TotOverlayService.setActivity(context, "thinking")
+                        } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
                             android.content.pm.PackageManager.PERMISSION_GRANTED
                         ) {
                             startSpeechRecognition()
@@ -857,7 +1140,15 @@ private fun KiCompanionScreen(context: Context) {
                         }
                     },
                 ) {
-                    Text("Mic", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                    when {
+                        speechPreparing.value -> CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = KiAccent,
+                            strokeWidth = 2.dp,
+                        )
+                        speechListening.value -> Text("Stop", color = KiError, fontWeight = FontWeight.SemiBold)
+                        else -> Text("Mic", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
             OutlinedTextField(
@@ -890,37 +1181,98 @@ private fun KiCompanionScreen(context: Context) {
                 }
             }
         }
-        if (voiceDraft.value) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Review transcript", color = KiMuted, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                TextButton(
-                    enabled = !busy.value,
-                    onClick = { startSpeechRecognition() },
-                ) { Text("Retry", color = KiAccent) }
-                TextButton(
-                    enabled = !busy.value,
-                    onClick = {
-                        input.value = voiceOriginalText.value
-                        voiceDraft.value = false
-                        status.value = "Voice message canceled. Nothing was sent."
-                        statusIsError.value = false
-                    },
-                ) { Text("Cancel", color = KiMuted) }
-                TextButton(
-                    enabled = !busy.value && input.value.isNotBlank(),
-                    onClick = { submitPrompt(input.value.trim(), attachment.value) },
-                ) { Text("Send", color = KiAccent, fontWeight = FontWeight.SemiBold) }
-            }
-        }
         Text(
             "Tot connects to Ki over trusted Wi-Fi or your private Tailscale network.",
             color = KiMuted,
             fontSize = 11.sp,
             modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+    }
+
+    voiceEditMessage.value?.let { message ->
+        AlertDialog(
+            onDismissRequest = { voiceEditMessage.value = null },
+            containerColor = KiSurface,
+            title = { Text("Edit spoken message", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "This prompt was already sent. Editing sends your correction to Ki as a new message.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                    )
+                    OutlinedTextField(
+                        value = voiceEditText.value,
+                        onValueChange = { voiceEditText.value = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 6,
+                        colors = kiTextFieldColors(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy.value && voiceEditText.value.isNotBlank(),
+                    onClick = {
+                        val correctedText = voiceEditText.value.trim()
+                        voiceEditMessage.value = null
+                        submitPrompt(correctedText, isVoicePrompt = true)
+                    },
+                ) { Text("Send correction", color = KiAccent, fontWeight = FontWeight.SemiBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { voiceEditMessage.value = null }) {
+                    Text("Cancel", color = KiMuted)
+                }
+            },
+        )
+    }
+
+    if (showSshDialog.value) {
+        AlertDialog(
+            onDismissRequest = { showSshDialog.value = false },
+            containerColor = KiSurface,
+            title = { Text("Open your PC terminal", color = KiText, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Tot will copy an SSH command and open Termux. Review and run the command yourself. Your PC must have OpenSSH Server enabled and be reachable on your private network or Tailscale.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                    OutlinedTextField(
+                        value = sshUsername.value,
+                        onValueChange = { sshUsername.value = it.take(64) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Windows username") },
+                        singleLine = true,
+                        colors = kiTextFieldColors(),
+                    )
+                    OutlinedTextField(
+                        value = sshPort.value,
+                        onValueChange = { value ->
+                            if (value.length <= 5 && value.all(Char::isDigit)) sshPort.value = value
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("SSH port") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = kiTextFieldColors(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { openTermuxForSsh() }) {
+                    Text("Copy command & open Termux", color = KiAccent, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSshDialog.value = false }) {
+                    Text("Cancel", color = KiMuted)
+                }
+            },
         )
     }
 
@@ -1280,45 +1632,85 @@ private fun KiCompanionScreen(context: Context) {
                             }
                         },
                     )
-                    Text("TOT EVERYWHERE", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    Text("LOCAL CHAT MODEL", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    Text(
+                        "Tot uses free, locally installed Ollama models. Only small models are listed; Ki switches its selected model when needed.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Floating Tot", color = KiText, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                if (overlayPermission.value) {
-                                    "Tot can float over other apps. Android shows a notification while Tot is active."
-                                } else {
-                                    "Allow display over other apps to let Tot follow you outside this app."
-                                },
-                                color = KiMuted,
-                                fontSize = 11.sp,
-                            )
-                        }
-                        Switch(
-                            checked = floatingTot.value,
-                            onCheckedChange = { enabled ->
-                                if (!enabled) {
-                                    updateFloatingTot(false)
-                                } else if (Settings.canDrawOverlays(context)) {
-                                    updateFloatingTot(true)
-                                } else {
-                                    overlayPermissionLauncher.launch(
-                                        Intent(
-                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                            Uri.parse("package:${context.packageName}"),
-                                        ),
+                        Box(modifier = Modifier.weight(1f)) {
+                            TextButton(
+                                enabled = chatModels.isNotEmpty(),
+                                onClick = { modelMenuExpanded.value = true },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    chatModels.firstOrNull {
+                                        it.name.equals(selectedModel.value, ignoreCase = true)
+                                    }?.let(::chatModelLabel) ?: selectedModel.value,
+                                    color = KiText,
+                                    maxLines = 1,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = modelMenuExpanded.value,
+                                onDismissRequest = { modelMenuExpanded.value = false },
+                            ) {
+                                chatModels.forEach { model ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(model.name, color = KiText, fontWeight = FontWeight.SemiBold)
+                                                Text(
+                                                    listOf(model.parameterSize, formatModelSize(model.sizeBytes))
+                                                        .filter { it.isNotBlank() }
+                                                        .joinToString(" · "),
+                                                    color = KiMuted,
+                                                    fontSize = 10.sp,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            selectedModel.value = model.name
+                                            preferences.edit().putString("chat_model", model.name).apply()
+                                            modelMenuExpanded.value = false
+                                            status.value = "Tot will use ${model.name} for its next text reply."
+                                            statusIsError.value = false
+                                        },
                                     )
                                 }
-                            },
-                        )
+                            }
+                        }
+                        TextButton(
+                            enabled = !modelLoading.value,
+                            onClick = { refreshChatModels() },
+                        ) {
+                            if (modelLoading.value) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = KiAccent,
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Text("Refresh", color = KiAccent)
+                            }
+                        }
+                    }
+                    if (chatModels.isEmpty()) {
                         Text(
-                            "You can also wake Tot from the Home screen.",
+                            if (host.value.isBlank() || token.value.isBlank()) {
+                                "Pair Tot with Ki first, then refresh to see models installed on the PC."
+                            } else {
+                                "No compatible model listed. On the PC, run `ollama pull qwen3:0.6b` or `ollama pull llama3.2:1b`, then refresh."
+                            },
                             color = KiMuted,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                         )
                     }
                     Text("VOICE INPUT", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
@@ -1514,13 +1906,56 @@ private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (S
 
 @Composable
 private fun TotMark(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .clip(CircleShape)
-            .background(KiAccent.copy(alpha = 0.13f)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text("•ᴗ•", color = KiAccent, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    val animation = rememberInfiniteTransition(label = "tot-face")
+    val pulse = animation.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 850),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "tot-face-pulse",
+    )
+    Canvas(modifier = modifier) {
+        val panelLeft = size.width * 0.06f
+        val panelTop = size.height * 0.12f
+        val panelWidth = size.width * 0.88f
+        val panelHeight = size.height * 0.70f
+        drawRoundRect(
+            color = Color(0xFF303236),
+            topLeft = Offset(panelLeft, panelTop),
+            size = Size(panelWidth, panelHeight),
+            cornerRadius = CornerRadius(size.minDimension * 0.035f),
+        )
+        val eyeY = panelTop + panelHeight * 0.43f
+        val eyeRadius = size.minDimension * 0.045f
+        val blink = pulse.value > 0.94f
+        if (blink) {
+            drawLine(Color(0xFFF0F0F0), Offset(panelLeft + panelWidth * 0.30f - eyeRadius, eyeY), Offset(panelLeft + panelWidth * 0.30f + eyeRadius, eyeY), eyeRadius * 0.45f)
+            drawLine(Color(0xFFF0F0F0), Offset(panelLeft + panelWidth * 0.70f - eyeRadius, eyeY), Offset(panelLeft + panelWidth * 0.70f + eyeRadius, eyeY), eyeRadius * 0.45f)
+        } else {
+            drawCircle(Color(0xFFF0F0F0), eyeRadius, Offset(panelLeft + panelWidth * 0.30f, eyeY))
+            drawCircle(Color(0xFFF0F0F0), eyeRadius, Offset(panelLeft + panelWidth * 0.70f, eyeY))
+        }
+        val mouthY = panelTop + panelHeight * 0.66f
+        drawLine(
+            color = Color(0xFFF0F0F0),
+            start = Offset(panelLeft + panelWidth * 0.39f, mouthY),
+            end = Offset(panelLeft + panelWidth * 0.61f, mouthY),
+            strokeWidth = size.minDimension * 0.035f,
+        )
+        val ringCenter = Offset(size.width * 0.50f, size.height * 0.93f)
+        drawCircle(
+            color = Color(0xFFE0A64B).copy(alpha = 0.25f + pulse.value * 0.30f),
+            radius = size.minDimension * (0.105f + pulse.value * 0.025f),
+            center = ringCenter,
+        )
+        drawCircle(
+            color = Color(0xFFE0A64B),
+            radius = size.minDimension * 0.075f,
+            center = ringCenter,
+            style = Stroke(width = size.minDimension * 0.028f),
+        )
     }
 }
 
@@ -1713,7 +2148,12 @@ private fun EmptyChatCard(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(
+    message: ChatMessage,
+    onEditVoice: () -> Unit,
+    onRetryVoice: () -> Unit,
+    onDeleteVoice: () -> Unit,
+) {
     val isUser = message.role == "user"
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1722,26 +2162,30 @@ private fun MessageBubble(message: ChatMessage) {
         Column(
             modifier = Modifier
                 .widthInCompat()
-                .clip(
-                    RoundedCornerShape(
-                        topStart = 17.dp,
-                        topEnd = 17.dp,
-                        bottomEnd = if (isUser) 5.dp else 17.dp,
-                        bottomStart = if (isUser) 17.dp else 5.dp,
-                    ),
-                )
-                .background(if (isUser) Color(0xFF34434B) else KiSurfaceRaised)
-                .padding(horizontal = 13.dp, vertical = 10.dp),
+                .clip(RoundedCornerShape(17.dp))
+                .background(if (isUser) Color(0xFF34434B) else KiSurfaceRaised),
         ) {
-            Text(
-                if (isUser) "YOU" else "KI",
-                color = if (isUser) KiAccent else KiMuted,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(message.content, color = KiText, fontSize = 14.sp)
+            Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
+                Text(
+                    if (isUser) "YOU" else "KI",
+                    color = if (isUser) KiAccent else KiMuted,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(message.content, color = KiText, fontSize = 14.sp)
+            }
+            if (message.voicePrompt) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onEditVoice) { Text("Edit", color = KiAccent, fontSize = 11.sp) }
+                    TextButton(onClick = onRetryVoice) { Text("Retry", color = KiAccent, fontSize = 11.sp) }
+                    TextButton(onClick = onDeleteVoice) { Text("Delete", color = KiMuted, fontSize = 11.sp) }
+                }
+            }
         }
     }
 }
@@ -1829,7 +2273,7 @@ private fun checkConnection(hostValue: String, token: String): String {
             throw IOException(response.optString("error", "The PC bridge is reachable, but Ollama is not running."))
         }
         if (!response.optBoolean("model_available", true)) {
-            throw IOException(response.optString("error", "The PC is missing the Qwen3:1.7b model."))
+            throw IOException(response.optString("error", "The PC is missing a compatible local chat model."))
         }
         return "Connected to Ki and Ollama."
     } finally {
@@ -1842,9 +2286,11 @@ private fun sendChat(
     token: String,
     messages: List<ChatMessage>,
     attachment: TextAttachment?,
+    model: String,
     speakOnPc: Boolean,
 ): String {
     val body = JSONObject().apply {
+        put("model", model)
         put("speak_on_pc", speakOnPc)
         put("messages", JSONArray().also { array ->
             messages.takeLast(20).forEach { message ->
@@ -1875,6 +2321,59 @@ private fun sendChat(
     } finally {
         connection.disconnect()
     }
+}
+
+private fun fetchChatModels(hostValue: String, token: String): List<ChatModel> {
+    val connection = openConnection("${normalizeHost(hostValue)}/api/models", token, "GET")
+    try {
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) {
+            throw IOException(response.optString("error", "Could not read local Ollama models (HTTP $code)."))
+        }
+        val modelsJson = response.optJSONArray("models") ?: JSONArray()
+        return (0 until modelsJson.length()).mapNotNull { index ->
+            val item = modelsJson.optJSONObject(index) ?: return@mapNotNull null
+            val name = item.optString("name")
+            if (name.isBlank()) return@mapNotNull null
+            ChatModel(
+                name = name,
+                parameterSize = item.optString("parameter_size"),
+                sizeBytes = item.optLong("size_bytes"),
+            )
+        }
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun fetchVscodeContext(hostValue: String, token: String): String {
+    val connection = openConnection("${normalizeHost(hostValue)}/api/vscode/context", token, "GET")
+    try {
+        val code = connection.responseCode
+        val responseText = readResponse(connection, code)
+        val response = JSONObject(responseText)
+        if (code !in 200..299) {
+            throw IOException(response.optString("error", "Could not read the copied VS Code selection (HTTP $code)."))
+        }
+        return response.optString("text").takeIf { it.isNotBlank() }
+            ?: throw IOException("Ki returned an empty VS Code selection.")
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun chatModelLabel(model: ChatModel): String = listOf(
+    model.name,
+    model.parameterSize,
+    formatModelSize(model.sizeBytes),
+).filter { it.isNotBlank() }.joinToString(" · ")
+
+private fun formatModelSize(sizeBytes: Long): String = when {
+    sizeBytes <= 0 -> ""
+    sizeBytes >= 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f GB", sizeBytes / (1024.0 * 1024 * 1024))
+    else -> "${(sizeBytes / (1024 * 1024)).coerceAtLeast(1)} MB"
 }
 
 private fun fetchAgentSnapshot(hostValue: String, token: String): Triple<List<AgentSession>, List<AgentPermission>, List<AgentEvent>> {

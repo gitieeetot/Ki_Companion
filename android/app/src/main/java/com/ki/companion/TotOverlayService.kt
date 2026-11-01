@@ -5,13 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.Typeface
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -22,6 +22,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
 import kotlin.math.sin
 
 class TotOverlayService : Service() {
@@ -38,6 +39,14 @@ class TotOverlayService : Service() {
                 .apply()
             stopSelf()
             return START_NOT_STICKY
+        }
+        val requestedActivity = intent
+            ?.takeIf { it.action == ACTION_SET_ACTIVITY }
+            ?.getStringExtra(EXTRA_ACTIVITY)
+            ?.takeIf { it in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy") }
+        if (requestedActivity != null && ::overlayView.isInitialized && overlayAttached) {
+            overlayView.setActivity(requestedActivity)
+            return START_STICKY
         }
 
         if (!Settings.canDrawOverlays(this)) {
@@ -65,6 +74,7 @@ class TotOverlayService : Service() {
         if (!::overlayView.isInitialized) {
             showOverlay()
         }
+        requestedActivity?.let(overlayView::setActivity)
         return START_STICKY
     }
 
@@ -72,10 +82,10 @@ class TotOverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val preferences = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         val density = resources.displayMetrics.density
-        overlayView = TotBuddyView(this)
+        overlayView = TotBuddyView(this) { openCompanion() }
         overlayParams = WindowManager.LayoutParams(
             (88 * density).toInt(),
-            (112 * density).toInt(),
+            (98 * density).toInt(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
@@ -104,6 +114,19 @@ class TotOverlayService : Service() {
         }
         windowManager.addView(overlayView, overlayParams)
         overlayAttached = true
+    }
+
+    private fun openCompanion() {
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            )
+        } catch (error: ActivityNotFoundException) {
+            Toast.makeText(this, "Could not open Tot chat.", Toast.LENGTH_SHORT).show()
+        } catch (error: SecurityException) {
+            Toast.makeText(this, "Android blocked opening Tot chat.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -170,6 +193,8 @@ class TotOverlayService : Service() {
         const val KEY_X = "tot_overlay_x"
         const val KEY_Y = "tot_overlay_y"
         private const val ACTION_STOP = "com.ki.companion.action.STOP_TOT"
+        private const val ACTION_SET_ACTIVITY = "com.ki.companion.action.SET_TOT_ACTIVITY"
+        private const val EXTRA_ACTIVITY = "activity"
         private const val CHANNEL_ID = "tot_floating_buddy"
         private const val NOTIFICATION_ID = 7421
 
@@ -180,143 +205,160 @@ class TotOverlayService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, TotOverlayService::class.java))
         }
+
+        fun setActivity(context: Context, activity: String) {
+            if (
+                activity !in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy") ||
+                !context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_ENABLED, false)
+            ) {
+                return
+            }
+            context.startService(
+                Intent(context, TotOverlayService::class.java)
+                    .setAction(ACTION_SET_ACTIVITY)
+                    .putExtra(EXTRA_ACTIVITY, activity),
+            )
+        }
     }
 }
 
-private class TotBuddyView(context: Context) : View(context) {
+private class TotBuddyView(context: Context, private val onTap: () -> Unit) : View(context) {
     private val density = resources.displayMetrics.density
     private val handler = Handler(Looper.getMainLooper())
-    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2A3036.toInt() }
-    private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB9F2FF.toInt() }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x338FE8FF }
-    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF17191C.toInt() }
-    private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xF2262930.toInt() }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFF2F4F6.toInt()
-        textSize = 10f * density
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        textAlign = Paint.Align.CENTER
+    private val panelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF303236.toInt() }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF414449.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 1f * density
     }
-    private val mouthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF17191C.toInt()
+    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF0F0F0.toInt() }
+    private val mouthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF0F0F0.toInt() }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFE0A64B.toInt()
         style = Paint.Style.STROKE
         strokeWidth = 1.5f * density
     }
-    private val phrases = listOf("Hey! I'm Tot!", "Ki & me = team!", "Need help?", "Robot stretch!")
-    private var phrase: String? = "Hi! I'm Tot!"
-    private var phraseUntil = System.currentTimeMillis() + 3_500
-    private var phraseIndex = 0
+    private val ringGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33E0A64B }
     private var downRawX = 0f
     private var downRawY = 0f
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragging = false
     private var startedAt = System.currentTimeMillis()
+    private var activity = "idle"
+    private var activityUntil = 0L
     var onDragged: ((Int, Int) -> Unit)? = null
     var onPositionChanged: (() -> Unit)? = null
 
     private val animation = object : Runnable {
         override fun run() {
+            if (activity == "happy" && System.currentTimeMillis() >= activityUntil) {
+                activity = "idle"
+            }
             invalidate()
             handler.postDelayed(this, 50)
         }
     }
-    private val smile = Path()
-
     init {
-        contentDescription = "Tot, your animated phone buddy. Drag me anywhere. Tap me for a hello."
+        contentDescription = "Tot, animated phone buddy. Drag to move."
         handler.post(animation)
+    }
+
+    fun setActivity(activity: String) {
+        this.activity = activity
+        activityUntil = if (activity == "happy") System.currentTimeMillis() + 1_400 else 0L
+        invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val now = System.currentTimeMillis()
-        val bob = sin((now - startedAt) / 260.0).toFloat() * 2.5f * density
+        val pulse = (0.5 + 0.5 * sin((now - startedAt) / 240.0)).toFloat()
+        val bob = sin((now - startedAt) / 380.0).toFloat() * 1.5f * density
+        val panelLeft = 4f * density
+        val panelTop = 10f * density + bob
+        val panelRight = width - 4f * density
+        val panelBottom = height - 24f * density + bob
+        val panelWidth = panelRight - panelLeft
+        val panelHeight = panelBottom - panelTop
         val centerX = width / 2f
-        val bodyTop = 43f * density + bob
-        val bodyWidth = 43f * density
-        val bodyHeight = 45f * density
+        canvas.drawRoundRect(panelLeft, panelTop, panelRight, panelBottom, 2f * density, 2f * density, panelPaint)
+        canvas.drawRoundRect(panelLeft, panelTop, panelRight, panelBottom, 2f * density, 2f * density, borderPaint)
 
-        val currentPhrase = phrase
-        if (currentPhrase != null && now < phraseUntil) {
-            canvas.drawRoundRect(
-                2f * density,
-                2f * density,
-                width - 2f * density,
-                34f * density,
-                12f * density,
-                12f * density,
-                bubblePaint,
-            )
-            canvas.drawText(currentPhrase, centerX, 21f * density, textPaint)
+        val eyeY = panelTop + panelHeight * 0.42f
+        val thinkingShift = if (activity == "thinking") sin((now - startedAt) / 420.0).toFloat() * 2f * density else 0f
+        val eyeOffset = panelWidth * 0.23f
+        val eyeRadius = 2.2f * density
+        val blink = now % 4_300 in 0L..120L
+        if (activity == "sleepy") {
+            canvas.drawLine(centerX - eyeOffset - eyeRadius, eyeY, centerX - eyeOffset + eyeRadius, eyeY, mouthPaint)
+            canvas.drawLine(centerX + eyeOffset - eyeRadius, eyeY, centerX + eyeOffset + eyeRadius, eyeY, mouthPaint)
+        } else if (blink) {
+            canvas.drawLine(centerX - eyeOffset + thinkingShift - eyeRadius, eyeY, centerX - eyeOffset + thinkingShift + eyeRadius, eyeY, mouthPaint)
+            canvas.drawLine(centerX + eyeOffset + thinkingShift - eyeRadius, eyeY, centerX + eyeOffset + thinkingShift + eyeRadius, eyeY, mouthPaint)
         } else {
-            phrase = null
+            canvas.drawCircle(centerX - eyeOffset + thinkingShift, eyeY, eyeRadius, eyePaint)
+            canvas.drawCircle(centerX + eyeOffset + thinkingShift, eyeY, eyeRadius, eyePaint)
         }
-
-        val bodyLeft = centerX - bodyWidth / 2f
-        val bodyRight = centerX + bodyWidth / 2f
-        val bodyBottom = bodyTop + bodyHeight
-        canvas.drawRoundRect(
-            bodyLeft - 7f * density,
-            bodyTop - 7f * density,
-            bodyRight + 7f * density,
-            bodyBottom + 7f * density,
-            17f * density,
-            17f * density,
-            glowPaint,
-        )
-        canvas.drawRoundRect(bodyLeft, bodyTop, bodyRight, bodyBottom, 13f * density, 13f * density, bodyPaint)
-        canvas.drawRoundRect(
-            bodyLeft + 5f * density,
-            bodyTop + 7f * density,
-            bodyRight - 5f * density,
-            bodyTop + 34f * density,
-            9f * density,
-            9f * density,
-            facePaint,
-        )
-        canvas.drawRoundRect(
-            bodyLeft + 8f * density,
-            bodyTop - 8f * density,
-            bodyLeft + 12f * density,
-            bodyTop + 1f * density,
-            2f * density,
-            2f * density,
-            bodyPaint,
-        )
-        canvas.drawCircle(bodyLeft + 10f * density, bodyTop - 9f * density, 2.5f * density, facePaint)
-
-        val blink = now % 3_800 in 0L..130L
-        if (blink) {
-            canvas.drawLine(bodyLeft + 13f * density, bodyTop + 20f * density, bodyLeft + 17f * density, bodyTop + 20f * density, mouthPaint)
-            canvas.drawLine(bodyLeft + 26f * density, bodyTop + 20f * density, bodyLeft + 30f * density, bodyTop + 20f * density, mouthPaint)
-        } else {
-            canvas.drawCircle(bodyLeft + 15f * density, bodyTop + 20f * density, 2f * density, eyePaint)
-            canvas.drawCircle(bodyLeft + 28f * density, bodyTop + 20f * density, 2f * density, eyePaint)
+        val mouthCenterY = panelTop + panelHeight * 0.64f
+        when (activity) {
+            "speaking" -> {
+                val mouthWidth = panelWidth * 0.28f
+                val mouthHeight = (2f + pulse * 7f) * density
+                canvas.drawRoundRect(
+                    centerX - mouthWidth / 2f,
+                    mouthCenterY - mouthHeight / 2f,
+                    centerX + mouthWidth / 2f,
+                    mouthCenterY + mouthHeight / 2f,
+                    3f * density,
+                    3f * density,
+                    mouthPaint,
+                )
+            }
+            "listening" -> {
+                val mouthSize = (3f + pulse * 2f) * density
+                canvas.drawOval(
+                    centerX - mouthSize * 0.6f,
+                    mouthCenterY - mouthSize / 2f,
+                    centerX + mouthSize * 0.6f,
+                    mouthCenterY + mouthSize / 2f,
+                    mouthPaint,
+                )
+            }
+            "curious" -> {
+                val mouthSize = (4f + pulse * 1.5f) * density
+                canvas.drawCircle(centerX, mouthCenterY, mouthSize / 2f, mouthPaint)
+            }
+            "happy" -> {
+                val smileRect = RectF(
+                    centerX - panelWidth * 0.15f,
+                    mouthCenterY - 5f * density,
+                    centerX + panelWidth * 0.15f,
+                    mouthCenterY + 4f * density,
+                )
+                mouthPaint.style = Paint.Style.STROKE
+                mouthPaint.strokeWidth = 1.5f * density
+                canvas.drawArc(smileRect, 15f, 150f, false, mouthPaint)
+                mouthPaint.style = Paint.Style.FILL
+            }
+            else -> {
+                val mouthWidth = panelWidth * 0.28f
+                canvas.drawLine(
+                    centerX - mouthWidth / 2f,
+                    mouthCenterY,
+                    centerX + mouthWidth / 2f,
+                    mouthCenterY,
+                    mouthPaint,
+                )
+            }
         }
-        smile.reset()
-        smile.moveTo(bodyLeft + 17f * density, bodyTop + 27f * density)
-        smile.quadTo(bodyLeft + 21.5f * density, bodyTop + 32f * density, bodyLeft + 26f * density, bodyTop + 27f * density)
-        canvas.drawPath(smile, mouthPaint)
-        val legBounce = sin((now - startedAt) / 160.0).toFloat() * 2f * density
-        canvas.drawRoundRect(
-            bodyLeft + 6f * density,
-            bodyBottom - 1f * density + legBounce,
-            bodyLeft + 18f * density,
-            bodyBottom + 5f * density + legBounce,
-            3f * density,
-            3f * density,
-            bodyPaint,
-        )
-        canvas.drawRoundRect(
-            bodyLeft + 25f * density,
-            bodyBottom - 1f * density - legBounce,
-            bodyLeft + 37f * density,
-            bodyBottom + 5f * density - legBounce,
-            3f * density,
-            3f * density,
-            bodyPaint,
-        )
+        val ringCenterY = height - 9f * density
+        val ringColor = if (activity == "listening") 0xFF8FE8FF.toInt() else 0xFFE0A64B.toInt()
+        ringGlowPaint.color = if (activity == "listening") 0x338FE8FF else 0x33E0A64B
+        ringPaint.color = ringColor
+        canvas.drawCircle(centerX, ringCenterY, (4f + pulse * 1.5f) * density, ringGlowPaint)
+        canvas.drawCircle(centerX, ringCenterY, 3.2f * density, ringPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -347,11 +389,9 @@ private class TotBuddyView(context: Context) : View(context) {
                 if (dragging) {
                     onPositionChanged?.invoke()
                 } else {
-                    phrase = phrases[phraseIndex % phrases.size]
-                    phraseIndex += 1
-                    phraseUntil = System.currentTimeMillis() + 2_800
-                    announceForAccessibility(phrase)
+                    announceForAccessibility("Opening Tot chat.")
                     performClick()
+                    onTap()
                 }
                 return true
             }

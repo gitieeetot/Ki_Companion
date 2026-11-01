@@ -17,6 +17,10 @@ PHONE_BRIDGE_MAX_IMAGE = 2_000_000
 PHONE_BRIDGE_ALLOWED_SUFFIXES = {".txt", ".md", ".json", ".csv", ".py", ".html", ".css", ".js", ".ts"}
 PHONE_BRIDGE_ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+PHONE_MODEL_MAX_BYTES = 3 * 1024 * 1024 * 1024
+PHONE_MODEL_MAX_PARAMETERS_BILLIONS = 3.0
+PHONE_MODEL_PARAMETER_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT])?B?\s*$", re.IGNORECASE)
+PHONE_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
 
 
 def phone_connection_addresses():
@@ -98,6 +102,7 @@ class PhoneCompanionServer(QObject):
 
     speak_requested = Signal(str)
     chat_received = Signal(str, str)
+    vscode_context_requested = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -164,6 +169,41 @@ class PhoneCompanionServer(QObject):
                 return True
 
             def do_GET(self):
+                if self.path == "/api/vscode/context":
+                    if not self._authorized():
+                        self._send_json(401, {"error": "Pairing token is invalid."})
+                        return
+                    if not bridge.enabled:
+                        self._send_json(503, {"error": "Phone companion is disabled."})
+                        return
+                    if not self._rate_allowed():
+                        self._send_json(429, {"error": "Too many requests. Wait a minute and try again."})
+                        return
+                    request = {"event": threading.Event(), "text": ""}
+                    bridge.vscode_context_requested.emit(request)
+                    if not request["event"].wait(5):
+                        self._send_json(503, {"error": "Ki's desktop could not read the copied selection. Make sure Ki is open."})
+                        return
+                    text = request["text"]
+                    if not isinstance(text, str) or not text:
+                        self._send_json(404, {"error": "Copy a VS Code selection on the PC, then try again."})
+                        return
+                    self._send_json(200, {"text": text})
+                    return
+                if self.path == "/api/models":
+                    if not self._authorized():
+                        self._send_json(401, {"error": "Pairing token is invalid."})
+                        return
+                    if not bridge.enabled:
+                        self._send_json(503, {"error": "Phone companion is disabled."})
+                        return
+                    try:
+                        models = bridge._installed_phone_models()
+                    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+                        self._send_json(503, {"error": str(error)})
+                        return
+                    self._send_json(200, {"models": models})
+                    return
                 if self.path == "/api/agents":
                     if not self._authorized():
                         self._send_json(401, {"error": "Pairing token is invalid."})
@@ -250,11 +290,14 @@ class PhoneCompanionServer(QObject):
                     user_message = messages[-1]["content"]
                     attachment = payload.get("attachment")
                     bridge._add_attachment(messages, attachment)
+                    selected_model = payload.get("model", OLLAMA_TEXT_MODEL)
+                    if not isinstance(selected_model, str) or not PHONE_MODEL_NAME_RE.fullmatch(selected_model):
+                        raise ValueError("Choose a valid locally installed chat model.")
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, AttributeError) as error:
                     self._send_json(400, {"error": str(error)})
                     return
                 try:
-                    answer = bridge._ask_local_model(messages)
+                    answer = bridge._ask_local_model(messages, selected_model)
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
                     self._send_json(502, {"error": str(error)})
                     return
@@ -367,26 +410,75 @@ class PhoneCompanionServer(QObject):
         handler._send_json(200, {"ok": True, **result})
 
     @staticmethod
-    def _local_model_status():
+    def _installed_phone_models():
         request = urllib.request.Request("http://127.0.0.1:11434/api/tags")
         local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with local_opener.open(request, timeout=3) as response:
                 result = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-            return False, False, "Ki's PC can be reached, but Ollama is not responding. Start Ollama and try again."
-        models = result.get("models", [])
-        if not isinstance(models, list):
-            return True, False, "Ollama responded, but its installed model list could not be read."
-        installed = {
-            model_name.casefold()
-            for model in models
-            if isinstance(model, dict)
-            for model_name in (model.get("name") or model.get("model"),)
-            if isinstance(model_name, str)
-        }
-        if "qwen3:1.7b" not in installed:
-            return True, False, "Ollama is running, but Qwen3:1.7b is not installed. Run `ollama run qwen3:1.7b` on the PC."
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise OSError("Ki's PC can be reached, but Ollama is not responding. Start Ollama and try again.") from error
+        if not isinstance(result, dict) or not isinstance(result.get("models"), list):
+            raise ValueError("Ollama responded, but its installed model list could not be read.")
+
+        supported = []
+        excluded_families = {"embed", "embedding", "rerank"}
+        for item in result["models"]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("model")
+            size = item.get("size")
+            details = item.get("details")
+            if (
+                not isinstance(name, str)
+                or not PHONE_MODEL_NAME_RE.fullmatch(name)
+                or type(size) is not int
+                or size < 1
+                or size > PHONE_MODEL_MAX_BYTES
+                or not isinstance(details, dict)
+            ):
+                continue
+            family = details.get("family")
+            families = details.get("families")
+            family_names = {
+                value.casefold()
+                for value in ([family] if isinstance(family, str) else [])
+                + (families if isinstance(families, list) else [])
+                if isinstance(value, str)
+            }
+            if family_names & excluded_families or any(
+                marker in name.casefold() for marker in ("embed", "rerank", "moondream")
+            ):
+                continue
+            parameter_size = details.get("parameter_size")
+            match = PHONE_MODEL_PARAMETER_RE.fullmatch(parameter_size) if isinstance(parameter_size, str) else None
+            if match:
+                amount = float(match.group(1))
+                unit = (match.group(2) or "B").upper()
+                size_in_billions = amount / {"K": 1_000_000, "M": 1_000, "G": 1, "T": 0.001, "B": 1}[unit]
+                if size_in_billions > PHONE_MODEL_MAX_PARAMETERS_BILLIONS:
+                    continue
+            elif size > 2 * 1024 * 1024 * 1024:
+                continue
+            supported.append({
+                "name": name,
+                "parameter_size": parameter_size if isinstance(parameter_size, str) else "",
+                "size_bytes": size,
+            })
+        supported.sort(key=lambda model: (model["name"].casefold() != OLLAMA_TEXT_MODEL, model["name"].casefold()))
+        return supported
+
+    @classmethod
+    def _local_model_status(cls):
+        try:
+            models = cls._installed_phone_models()
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+            return False, False, str(error)
+        if not models:
+            return True, False, (
+                "Ollama is running, but no installed chat models under 3B parameters and 3 GB are available. "
+                "Install a small model such as qwen3:0.6b, then refresh Models in Tot."
+            )
         return True, True, ""
 
     @staticmethod
@@ -455,8 +547,18 @@ class PhoneCompanionServer(QObject):
         )
 
     @staticmethod
-    def _ask_local_model(messages):
-        model = OLLAMA_VISION_MODEL if messages[-1].get("images") else OLLAMA_TEXT_MODEL
+    def _ask_local_model(messages, selected_model=OLLAMA_TEXT_MODEL):
+        is_vision = bool(messages[-1].get("images"))
+        model = OLLAMA_VISION_MODEL if is_vision else selected_model
+        available_models = PhoneCompanionServer._installed_phone_models()
+        if not is_vision and model.casefold() not in {
+            entry["name"].casefold() for entry in available_models
+        }:
+            raise ValueError(
+                "That model is not installed or is too large for Tot's low-resource model list. "
+                "Refresh Models in Tot and choose an available model."
+            )
+        managed_models = [entry["name"] for entry in available_models] + [OLLAMA_VISION_MODEL]
         system = {
             "role": "system",
             "content": (
@@ -469,7 +571,7 @@ class PhoneCompanionServer(QObject):
         local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with OLLAMA_MODEL_LOCK:
-                activate_ollama_model(model)
+                activate_ollama_model(model, managed_models=managed_models)
                 body = json.dumps({
                     "model": model,
                     "messages": [system, *messages[-12:]],

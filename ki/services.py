@@ -9,8 +9,8 @@ OLLAMA_TEXT_MODEL = "qwen3:1.7b"
 OLLAMA_VISION_MODEL = "moondream:latest"
 
 
-def activate_ollama_model(model):
-    """Unload the other Ki model when switching before activating the selection."""
+def activate_ollama_model(model, managed_models=None):
+    """Unload the previous Ki-managed model before activating the selection."""
     global _ACTIVE_OLLAMA_MODEL
     if _ACTIVE_OLLAMA_MODEL:
         previous_models = [_ACTIVE_OLLAMA_MODEL]
@@ -27,19 +27,24 @@ def activate_ollama_model(model):
         if not isinstance(loaded, list):
             raise ValueError("Ollama returned a loaded-model list Ki could not read.")
         loaded_names = {
-            name.casefold()
+            name.casefold(): name
             for item in loaded
             if isinstance(item, dict)
             for name in (item.get("name") or item.get("model"),)
             if isinstance(name, str)
         }
+        managed_names = {
+            name.casefold()
+            for name in (managed_models or (OLLAMA_TEXT_MODEL, OLLAMA_VISION_MODEL))
+            if isinstance(name, str)
+        }
         previous_models = [
-            known_model
-            for known_model in (OLLAMA_TEXT_MODEL, OLLAMA_VISION_MODEL)
-            if known_model != model and known_model.casefold() in loaded_names
+            loaded_name
+            for name, loaded_name in loaded_names.items()
+            if name in managed_names and name != model.casefold()
         ]
     for previous_model in dict.fromkeys(previous_models):
-        if previous_model == model:
+        if previous_model.casefold() == model.casefold():
             continue
         body = json.dumps({
             "model": previous_model,

@@ -78,6 +78,7 @@ class RobotWidget(QWidget):
         self.phone_bridge.agent_monitor = self.agent_monitor
         self.phone_bridge.chat_received.connect(self.chat.show_phone_conversation)
         self.phone_bridge.speak_requested.connect(self.chat.speak_phone_reply)
+        self.phone_bridge.vscode_context_requested.connect(self.chat.get_vscode_selection_for_phone)
         self.dashboard = DashboardWindow(self.chat, self.agent_monitor)
         self.dashboard.quit_callback = self.request_quit
         self.dashboard.phone_bridge = self.phone_bridge
@@ -461,64 +462,24 @@ class RobotWidget(QWidget):
         dancing = self.state == "idle" and (
             self.music_singing or now < self._random_dance_until
         )
-        idle_pose = self._idle_pose if self.state == "idle" and now < self._idle_pose_until else None
-        pose_motion = self.phase * 2.0
         if dancing:
-            bounce = 2.2 * (0.5 - 0.5 * math.cos(self.phase * 2))
-            sway = 5.5 * math.sin(self.phase)
+            bounce = 1.8 * (0.5 - 0.5 * math.cos(self.phase * 2))
+            sway = 3.0 * math.sin(self.phase)
             p.translate(52, 52 + bounce)
             p.rotate(sway)
             p.translate(-52, -52)
-            arm_swing = math.sin(self.phase * 2.0)
-            p.setPen(QPen(QColor("#a8edff"), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawLine(QPointF(17, 57), QPointF(8, 50 - 8 * arm_swing))
-            p.drawLine(QPointF(87, 57), QPointF(96, 50 + 8 * arm_swing))
-            leg_swing = 4 * math.sin(self.phase * 2.0 + math.pi / 2)
-            p.drawLine(QPointF(39, 84), QPointF(37 + leg_swing, 96))
-            p.drawLine(QPointF(65, 84), QPointF(67 - leg_swing, 96))
-        elif idle_pose:
-            p.setPen(QPen(QColor("#a8edff"), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            if idle_pose == "walk":
-                walk_progress = min(
-                    1.0,
-                    max(0.0, (now - self._walk_started) / self._walk_duration),
-                ) if self._walk_duration else 0.0
-                step_phase = math.tau * (WALK_STEPS / 2) * walk_progress
-                step = math.sin(step_phase) * 5
-                bounce = abs(math.sin(step_phase)) * 2
-                p.translate(0, -bounce)
-                p.drawLine(QPointF(17, 56), QPointF(8, 50 + step))
-                p.drawLine(QPointF(87, 56), QPointF(96, 50 - step))
-                p.drawLine(QPointF(39, 84), QPointF(37 + step, 97))
-                p.drawLine(QPointF(65, 84), QPointF(67 - step, 97))
-            elif idle_pose == "sit":
-                p.translate(0, 4)
-                p.drawLine(QPointF(18, 60), QPointF(10, 72))
-                p.drawLine(QPointF(86, 60), QPointF(94, 72))
-                p.drawLine(QPointF(39, 84), QPointF(30, 94))
-                p.drawLine(QPointF(65, 84), QPointF(74, 94))
-                p.drawLine(QPointF(30, 94), QPointF(42, 94))
-                p.drawLine(QPointF(74, 94), QPointF(62, 94))
-            elif idle_pose == "stand":
-                arm_lift = 5 + 2 * math.sin(pose_motion)
-                p.drawLine(QPointF(17, 56), QPointF(10, 48 - arm_lift))
-                p.drawLine(QPointF(87, 56), QPointF(94, 48 - arm_lift))
-                p.drawLine(QPointF(39, 84), QPointF(38, 96))
-                p.drawLine(QPointF(65, 84), QPointF(66, 96))
-        glow = QRadialGradient(52, 51, 50)
-        glow.setColorAt(0, QColor(235, 235, 235, 24 + int(pulse * 15)))
-        glow.setColorAt(1, QColor(235, 235, 235, 0))
+        elif self.state in {"listening", "thinking", "speaking"}:
+            p.translate(0, math.sin(self.phase * 1.8) * 1.2)
+        glow = QRadialGradient(52, 51, 52)
+        glow.setColorAt(0, QColor(224, 166, 75, 12 + int(pulse * 10)))
+        glow.setColorAt(1, QColor(224, 166, 75, 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(glow)
         p.drawEllipse(QRectF(2, 2, 100, 100))
-        p.setBrush(QColor("#252525"))
-        p.setPen(QPen(QColor("#555555"), 1.4))
-        body = QRectF(12, 14, 80, 74)
-        if self.drag_hover:
-            p.setPen(QPen(QColor("#dddddd"), 2.3))
-        else:
-            p.setPen(QPen(QColor("#555555"), 1.4))
-        p.drawRoundedRect(body, 27, 27)
+        panel = QRectF(8, 10, 88, 72)
+        p.setBrush(QColor("#303236"))
+        p.setPen(QPen(QColor("#74777b") if self.drag_hover else QColor("#414347"), 1.8 if self.drag_hover else 1.0))
+        p.drawRoundedRect(panel, 2.5, 2.5)
         if self.expression:
             mood = self.expression
         elif self.music_singing and self.state == "idle":
@@ -526,152 +487,93 @@ class RobotWidget(QWidget):
         elif self.state == "idle" and self.device_mood in ("charging", "low_battery", "busy"):
             mood = self.device_mood
         else:
-            mood = self.idle_expression if self.idle_expression != "neutral" else None
-        eye_y = 38
+            mood = self.idle_expression if self.idle_expression != "neutral" else "neutral"
+        eye_y = 43
+        gaze_x = self.gaze_x * 0.25
+        gaze_y = self.gaze_y * 0.18
         blinking = now < self._blink_until
-        if self.state == "listening":
-            eye_y += int(1.5 * math.sin(self.phase * 1.8))
-        elif self.state == "thinking":
-            eye_y += int(2 * math.sin(self.phase * 2))
-        elif self.state == "speaking":
-            eye_y -= 1
-        elif self.music_singing and self.state == "idle":
-            eye_y += int(1.5 * math.sin(self.phase * 2.0))
-
-        color = QColor("#72dcff") if mood == "charging" else QColor("#ffcf75") if mood == "low_battery" else QColor("#f4f4f4")
-        eye_color = QColor("#a8edff") if mood not in ("charging", "low_battery") else color
-        left_eye = QRectF(25, eye_y, 24, 27)
-        right_eye = QRectF(55, eye_y, 24, 27)
-        p.setPen(Qt.PenStyle.NoPen)
-
-        if blinking:
-            p.setPen(QPen(eye_color, 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawLine(27, eye_y + 14, 47, eye_y + 14)
-            p.drawLine(57, eye_y + 14, 77, eye_y + 14)
-        elif mood == "wink":
-            p.setPen(QPen(eye_color, 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(26, eye_y + 6, 22, 15), 190 * 16, 160 * 16)
+        eye_color = QColor("#f0f0f0")
+        left_eye_x = 36 + gaze_x
+        right_eye_x = 68 + gaze_x
+        if blinking or mood == "wink":
+            p.setPen(QPen(eye_color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(left_eye_x - 2.7, eye_y + gaze_y), QPointF(left_eye_x + 2.7, eye_y + gaze_y))
+            if mood != "wink":
+                p.drawLine(QPointF(right_eye_x - 2.7, eye_y + gaze_y), QPointF(right_eye_x + 2.7, eye_y + gaze_y))
+            else:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(eye_color)
+                p.drawEllipse(QRectF(right_eye_x - 2.6, eye_y + gaze_y - 2.6, 5.2, 5.2))
+        elif mood in {"happy", "charging"}:
+            p.setPen(QPen(eye_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(left_eye_x - 3.2, eye_y + gaze_y - 2.5, 6.4, 5.5), 200 * 16, 140 * 16)
+            p.drawArc(QRectF(right_eye_x - 3.2, eye_y + gaze_y - 2.5, 6.4, 5.5), 200 * 16, 140 * 16)
+        elif mood in {"sleepy", "low_battery"}:
+            p.setPen(QPen(eye_color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(left_eye_x - 2.6, eye_y + gaze_y + 1), QPointF(left_eye_x + 2.6, eye_y + gaze_y + 1))
+            p.drawLine(QPointF(right_eye_x - 2.6, eye_y + gaze_y + 1), QPointF(right_eye_x + 2.6, eye_y + gaze_y + 1))
+        else:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(eye_color)
-            p.drawRoundedRect(QRectF(56, eye_y + 2, 22, 25), 11, 12)
-            p.setBrush(QColor("#172b42"))
-            p.drawEllipse(QRectF(62 + self.gaze_x, eye_y + 8 + self.gaze_y, 9, 13))
-        elif mood == "happy" or mood == "charging":
-            p.setPen(QPen(eye_color, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(26, eye_y + 5, 22, 16), 200 * 16, 140 * 16)
-            p.drawArc(QRectF(56, eye_y + 5, 22, 16), 200 * 16, 140 * 16)
-        elif mood == "sleepy":
-            p.setBrush(eye_color)
-            p.drawRoundedRect(QRectF(25, eye_y + 14, 24, 11), 5, 5)
-            p.drawRoundedRect(QRectF(55, eye_y + 14, 24, 11), 5, 5)
-        else:
-            if mood == "surprised" or mood == "excited":
-                left_eye.adjust(-1, -2, 1, 3 if mood == "excited" else 2)
-                right_eye.adjust(-1, -2, 1, 3 if mood == "excited" else 2)
-            if self.state == "speaking" or (self.music_singing and self.state == "idle"):
-                left_eye.setHeight(24 + int(pulse * 3))
-                right_eye.setHeight(24 + int(pulse * 3))
-            p.setBrush(eye_color)
-            p.drawRoundedRect(left_eye, 12, 13)
-            p.drawRoundedRect(right_eye, 12, 13)
+            eye_radius = 2.9 if mood in {"excited", "surprised"} else 2.4
+            p.drawEllipse(QRectF(left_eye_x - eye_radius, eye_y + gaze_y - eye_radius, eye_radius * 2, eye_radius * 2))
+            p.drawEllipse(QRectF(right_eye_x - eye_radius, eye_y + gaze_y - eye_radius, eye_radius * 2, eye_radius * 2))
 
-            pupil_w, pupil_h = 10, 14
-            pupil_y = eye_y + 6 + self.gaze_y
-            left_pupil_x = 32 + self.gaze_x
-            right_pupil_x = 62 + self.gaze_x
-            if self.state == "thinking" or mood == "curious" or mood == "busy":
-                pupil_y -= 2
-            if self.state == "listening":
-                pupil_w, pupil_h = 9, 13
-                pupil_y -= 1
-            p.setBrush(QColor("#172b42"))
-            p.drawEllipse(QRectF(left_pupil_x, pupil_y, pupil_w, pupil_h))
-            p.drawEllipse(QRectF(right_pupil_x, pupil_y, pupil_w, pupil_h))
-            p.setBrush(QColor("#ffffff"))
-            p.drawEllipse(QRectF(left_pupil_x + 2, pupil_y + 2, 3.5, 4))
-            p.drawEllipse(QRectF(right_pupil_x + 2, pupil_y + 2, 3.5, 4))
-            if mood == "curious" or mood == "confused":
-                p.setPen(QPen(QColor("#d7d7dc"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                p.drawLine(28, eye_y - 3, 42, eye_y - 5)
-                if mood == "confused":
-                    p.drawLine(59, eye_y - 5, 76, eye_y - 2)
-
-        mouth_color = QColor("#a8edff") if mood not in ("charging", "low_battery") else color
+        mouth_color = QColor("#f0f0f0")
+        mouth_center_x = 52
+        mouth_center_y = 62
+        mouth_width = 19
         if self.state == "speaking" or (self.music_singing and self.state == "idle"):
-            mouth_height = 3 + int((0.5 + 0.5 * math.sin(self.phase * (8 if self.music_singing else 7))) * 10)
-            if self.music_singing:
-                mouth_height = 4 + int((0.5 + 0.5 * math.sin(self.phase * 11)) * 12)
+            mouth_height = 2.5 + 7 * (0.5 + 0.5 * math.sin(self.phase * (10 if self.music_singing else 7)))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(mouth_color)
-            mouth_width = 18 + (int(3 * (0.5 + 0.5 * math.sin(self.phase * 7))) if self.music_singing else 0)
-            p.drawRoundedRect(QRectF(52 - mouth_width / 2, 69 - mouth_height / 2, mouth_width, mouth_height), 5, 5)
-        elif time.monotonic() < self.eating_until:
-            chew = int((0.5 + 0.5 * math.sin(self.phase * 16)) * 8)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(mouth_color)
-            p.drawEllipse(QRectF(46, 67, 12, 7 + chew))
+            p.drawRoundedRect(QRectF(mouth_center_x - mouth_width / 2, mouth_center_y - mouth_height / 2, mouth_width, mouth_height), 4, 4)
         elif self.state == "listening":
-            mouth_w = 8 + int(2 * (0.5 + 0.5 * math.sin(self.phase * 3)))
-            mouth_h = 8 + int(2 * (0.5 + 0.5 * math.sin(self.phase * 2)))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(mouth_color)
-            p.drawRoundedRect(QRectF(52 - mouth_w / 2, 74 - mouth_h / 2, mouth_w, mouth_h), 5, 5)
-        elif mood == "happy" or mood == "charging":
-            p.setPen(QPen(mouth_color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(41, 64, 22, 16), 200 * 16, 140 * 16)
-        elif mood == "excited":
-            p.setPen(QPen(mouth_color, 2))
-            p.setBrush(QColor("#a8edff"))
-            p.drawEllipse(QRectF(47, 67, 11, 13))
-        elif mood == "surprised":
-            p.setPen(QPen(mouth_color, 2))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(QRectF(49, 68, 7, 9))
-        elif mood == "confused":
-            p.setPen(QPen(mouth_color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(45, 68, 17, 11), 25 * 16, 125 * 16)
-        elif mood in ("sad", "concerned"):
-            p.setPen(QPen(mouth_color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(43, 70, 18, 12), 20 * 16, 140 * 16)
-        elif mood == "curious":
-            p.setPen(QPen(mouth_color, 2))
-            p.drawEllipse(QRectF(52, 71, 3, 3))
-        elif mood == "low_battery":
-            p.setPen(QPen(mouth_color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawLine(50, 74, 55, 74)
-            p.drawEllipse(QRectF(47, 69, 3, 3))
+            mouth_size = 3 + 2 * pulse
+            p.drawEllipse(QRectF(mouth_center_x - mouth_size / 2, mouth_center_y - mouth_size / 2, mouth_size, mouth_size))
+        elif now < self.eating_until:
+            chew_height = 2.5 + 6 * (0.5 + 0.5 * math.sin(self.phase * 12))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(mouth_color)
+            p.drawRoundedRect(
+                QRectF(mouth_center_x - 4.5, mouth_center_y - chew_height / 2, 9, chew_height),
+                3,
+                3,
+            )
+        elif self.state == "thinking":
+            dash_offset = 2 * math.sin(self.phase * 2)
+            p.setPen(QPen(mouth_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(mouth_center_x - 9 + dash_offset, mouth_center_y), QPointF(mouth_center_x + 9 + dash_offset, mouth_center_y))
+        elif mood in {"happy", "charging"}:
+            p.setPen(QPen(mouth_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(mouth_center_x - 9, mouth_center_y - 4, 18, 8), 200 * 16, 140 * 16)
+        elif mood in {"sad", "concerned", "low_battery"}:
+            p.setPen(QPen(mouth_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(mouth_center_x - 8, mouth_center_y - 1, 16, 8), 20 * 16, 140 * 16)
+        elif mood in {"surprised", "excited"}:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(mouth_color)
+            p.drawEllipse(QRectF(mouth_center_x - 2, mouth_center_y - 3, 4, 6))
+        elif mood in {"curious", "confused"}:
+            p.setPen(QPen(mouth_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(mouth_center_x - 1, mouth_center_y + 1, ), QPointF(mouth_center_x + 7, mouth_center_y - 1))
         else:
-            p.setPen(QPen(QColor("#d7d7dc"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(43, 67, 18, 12), 205 * 16, 130 * 16)
-        if self.device_mood == "charging":
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#72dcff"))
-            p.drawEllipse(QRectF(75, 13, 16, 16))
-            p.setPen(QPen(QColor("#172b42"), 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawLine(83, 16, 80, 21)
-            p.drawLine(80, 21, 83, 21)
-            p.drawLine(83, 21, 81, 26)
-        if self.music_singing and self.state == "idle":
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#1d1d1d"))
-            p.drawRoundedRect(QRectF(18, 20, 68, 56), 16, 16)
-            for index in range(11):
-                envelope = 0.18 + 0.82 * abs(math.sin(self.phase * 2.5 - index * 0.56))
-                harmonic = 0.55 + 0.45 * abs(math.sin(self.phase * 1.4 + index * 0.91))
-                bar_height = 5 + 30 * envelope * harmonic
-                x = 23 + index * 5.4
-                y = 48 - bar_height / 2
-                color = QColor("#dce0e4") if index % 3 else QColor("#9ddcf0")
-                color.setAlpha(180 + int(75 * envelope))
-                p.setBrush(color)
-                p.drawRoundedRect(QRectF(x, y, 3.4, bar_height), 1.7, 1.7)
-        if self.audio_connecting or self.audio_ready:
-            glow_alpha = 45 + int((0.5 + 0.5 * math.sin(self.phase * 3)) * 55)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 40, 52, glow_alpha))
-            p.drawEllipse(QRectF(75, 14, 18, 18))
-            p.setBrush(QColor("#ff303d"))
-            p.drawEllipse(QRectF(79, 18, 10, 10))
+            p.setPen(QPen(mouth_color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(mouth_center_x - 9, mouth_center_y), QPointF(mouth_center_x + 9, mouth_center_y))
+
+        ring_color = QColor("#ff303d") if self.audio_ready else QColor("#8fe8ff") if self.state == "listening" else QColor("#e0a64b")
+        if self.device_mood == "charging" and not self.audio_ready:
+            ring_color = QColor("#8fe8ff")
+        glow_color = QColor(ring_color)
+        glow_color.setAlpha(80 + int(pulse * 100))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(glow_color)
+        p.drawEllipse(QRectF(52 - 6 - pulse, 93 - 6 - pulse, 12 + pulse * 2, 12 + pulse * 2))
+        p.setPen(QPen(ring_color, 1.3))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(48.5, 89.5, 7, 7))
         if self._transition_kind:
             progress = min(1.0, (time.monotonic() - self._transition_started) / self._transition_duration)
             strength = 1 - progress if self._transition_kind == "entrance" else progress
@@ -679,19 +581,17 @@ class RobotWidget(QWidget):
             if glitch_tick % 4 != 0:
                 for index in range(4):
                     if (glitch_tick + index * 3) % 5 < 2:
-                        band_y = 18 + ((glitch_tick * 9 + index * 19) % 66)
-                        band_x = int(math.sin(self.phase * 11 + index * 2.1) * 10 * strength)
-                        color = QColor("#5be2ff")
+                        band_y = 13 + ((glitch_tick * 9 + index * 15) % 62)
+                        band_x = int(math.sin(self.phase * 11 + index * 2.1) * 5 * strength)
+                        color = QColor("#e0a64b")
                         color.setAlpha(int((55 + index * 10) * strength))
-                        p.fillRect(QRectF(band_x, band_y, 30 + index * 12, 2), color)
+                        p.fillRect(QRectF(8 + band_x, band_y, 30 + index * 12, 1.5), color)
                         color.setAlpha(int(30 * strength))
-                        p.fillRect(QRectF(64 - band_x, band_y + 3, 22, 1), color)
-        p.setPen(QPen(QColor("#dddddd"), 1))
-        p.drawEllipse(QRectF(49, 7, 6, 6))
+                        p.fillRect(QRectF(64 - band_x, band_y + 2, 22, 1), color)
         if now < self._click_fx_until:
             remaining = (self._click_fx_until - now) / 0.72
             glow_alpha = int(150 * remaining)
-            p.setPen(QPen(QColor(140, 225, 255, glow_alpha), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.setPen(QPen(QColor(224, 166, 75, glow_alpha), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             if self._click_fx_kind == "wave":
                 wave_width = int((1 - remaining) * 20) + 4
                 p.drawArc(QRectF(52 - wave_width, 52 - wave_width, wave_width * 2, wave_width * 2), 35 * 16, 265 * 16)
@@ -699,7 +599,7 @@ class RobotWidget(QWidget):
                 p.setFont(QFont("Segoe UI Symbol", 13, QFont.Weight.Bold))
                 p.drawText(QRectF(37, 4 - int((1 - remaining) * 5), 30, 23), Qt.AlignmentFlag.AlignCenter, "♥")
             else:
-                for x, y, direction in ((18, 42, 1), (81, 44, -1), (29, 79, 1)):
+                for x, y, direction in ((16, 36, 1), (87, 39, -1), (30, 82, 1)):
                     p.drawLine(x, y - 4, x, y + 4)
                     p.drawLine(x - 4, y, x + 4, y)
                     p.drawLine(x - 3 * direction, y - 3, x + 3 * direction, y + 3)
