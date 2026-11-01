@@ -46,7 +46,7 @@ class TotOverlayService : Service() {
         val requestedActivity = intent
             ?.takeIf { it.action == ACTION_SET_ACTIVITY }
             ?.getStringExtra(EXTRA_ACTIVITY)
-            ?.takeIf { it in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy") }
+            ?.takeIf { it in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy", "dancing") }
         if (requestedActivity != null && ::overlayView.isInitialized && overlayAttached) {
             overlayView.setActivity(requestedActivity)
             return START_STICKY
@@ -293,7 +293,7 @@ class TotOverlayService : Service() {
 
         fun setActivity(context: Context, activity: String) {
             if (
-                activity !in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy") ||
+                activity !in setOf("idle", "listening", "thinking", "speaking", "happy", "curious", "sleepy", "dancing") ||
                 !context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
                     .getBoolean(KEY_ENABLED, false)
             ) {
@@ -319,6 +319,13 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
     }
     private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF0F0F0.toInt() }
     private val mouthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF0F0F0.toInt() }
+    private val limbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFF8FE8FF.toInt()
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeWidth = 2.4f * density
+    }
+    private val handPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF8FE8FF.toInt() }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFE0A64B.toInt()
         style = Paint.Style.STROKE
@@ -378,13 +385,30 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
         val now = System.currentTimeMillis()
         val pulse = (0.5 + 0.5 * sin((now - startedAt) / 240.0)).toFloat()
         val bob = sin((now - startedAt) / 380.0).toFloat() * 1.5f * density
-        val panelLeft = 4f * density
+        val panelLeft = 10f * density
         val panelTop = 10f * density + bob
-        val panelRight = width - 4f * density
+        val panelRight = width - 10f * density
         val panelBottom = height - 24f * density + bob
         val panelWidth = panelRight - panelLeft
         val panelHeight = panelBottom - panelTop
         val centerX = width / 2f
+        val lively = activity in setOf("speaking", "happy", "dancing")
+        val dance = if (lively) sin((now - startedAt) / 115.0).toFloat() else sin((now - startedAt) / 520.0).toFloat() * 0.22f
+        val armY = panelTop + panelHeight * 0.60f
+        val armReach = (4.5f + kotlin.math.abs(dance) * 4f) * density
+        val handRadius = 2.4f * density
+        limbPaint.strokeWidth = 2.6f * density
+        canvas.drawLine(panelLeft + 3f * density, armY, panelLeft - armReach, armY - dance * 5f * density, limbPaint)
+        canvas.drawLine(panelRight - 3f * density, armY, panelRight + armReach, armY + dance * 5f * density, limbPaint)
+        canvas.drawCircle(panelLeft - armReach, armY - dance * 5f * density, handRadius, handPaint)
+        canvas.drawCircle(panelRight + armReach, armY + dance * 5f * density, handRadius, handPaint)
+        val footY = panelBottom + 13f * density
+        val legSpread = panelWidth * 0.18f
+        val step = if (lively) dance * 3f * density else 0f
+        canvas.drawLine(centerX - legSpread, panelBottom - 2f * density, centerX - legSpread + step, footY - kotlin.math.abs(step), limbPaint)
+        canvas.drawLine(centerX + legSpread, panelBottom - 2f * density, centerX + legSpread - step, footY - kotlin.math.abs(step), limbPaint)
+        canvas.drawLine(centerX - legSpread + step - 2f * density, footY - kotlin.math.abs(step), centerX - legSpread + step + 2f * density, footY - kotlin.math.abs(step), limbPaint)
+        canvas.drawLine(centerX + legSpread - step - 2f * density, footY - kotlin.math.abs(step), centerX + legSpread - step + 2f * density, footY - kotlin.math.abs(step), limbPaint)
         canvas.drawRoundRect(panelLeft, panelTop, panelRight, panelBottom, 2f * density, 2f * density, panelPaint)
         canvas.drawRoundRect(panelLeft, panelTop, panelRight, panelBottom, 2f * density, 2f * density, borderPaint)
 

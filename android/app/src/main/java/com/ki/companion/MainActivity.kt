@@ -1684,6 +1684,14 @@ private fun KiCompanionScreen(context: Context) {
                         fontSize = 11.sp,
                         lineHeight = 16.sp,
                     )
+                    Text("WHO'S WHO", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                    Text(
+                        "Tot is your expressive Android companion: it lives on your phone, helps with chat, voice, images, and Termux shortcuts, and shares requests with your paired PC.\n\n" +
+                            "Ki is your Windows assistant: it runs local models and PC features on your laptop. Tot does not independently control the PC; Ki phone access and Windows approvals stay in your hands.",
+                        color = KiMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1966,6 +1974,34 @@ private fun TotMark(modifier: Modifier = Modifier) {
         val panelTop = size.height * 0.12f
         val panelWidth = size.width * 0.88f
         val panelHeight = size.height * 0.70f
+        val armSwing = (pulse.value - 0.5f) * size.height * 0.10f
+        val limbColor = KiAccent
+        val limbWidth = size.minDimension * 0.055f
+        val armY = panelTop + panelHeight * 0.63f
+        val handRadius = size.minDimension * 0.05f
+        drawLine(
+            limbColor,
+            Offset(panelLeft + panelWidth * 0.05f, armY),
+            Offset(panelLeft - size.width * 0.035f, armY - armSwing),
+            limbWidth,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawLine(
+            limbColor,
+            Offset(panelLeft + panelWidth * 0.95f, armY),
+            Offset(panelLeft + panelWidth + size.width * 0.035f, armY + armSwing),
+            limbWidth,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawCircle(limbColor, handRadius, Offset(panelLeft - size.width * 0.035f, armY - armSwing))
+        drawCircle(limbColor, handRadius, Offset(panelLeft + panelWidth + size.width * 0.035f, armY + armSwing))
+        val legTop = panelTop + panelHeight * 0.88f
+        val legBottom = size.height * 0.91f
+        val legOffset = panelWidth * 0.20f
+        drawLine(limbColor, Offset(size.width * 0.5f - legOffset, legTop), Offset(size.width * 0.5f - legOffset - armSwing * 0.18f, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(limbColor, Offset(size.width * 0.5f + legOffset, legTop), Offset(size.width * 0.5f + legOffset + armSwing * 0.18f, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(limbColor, Offset(size.width * 0.5f - legOffset - armSwing * 0.18f - handRadius, legBottom), Offset(size.width * 0.5f - legOffset - armSwing * 0.18f + handRadius, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(limbColor, Offset(size.width * 0.5f + legOffset + armSwing * 0.18f - handRadius, legBottom), Offset(size.width * 0.5f + legOffset + armSwing * 0.18f + handRadius, legBottom), limbWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
         drawRoundRect(
             color = Color(0xFF303236),
             topLeft = Offset(panelLeft, panelTop),
