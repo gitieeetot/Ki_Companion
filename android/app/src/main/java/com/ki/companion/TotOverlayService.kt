@@ -9,6 +9,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.animation.ValueAnimator
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -23,6 +24,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
+import android.view.animation.DecelerateInterpolator
 import kotlin.math.sin
 
 class TotOverlayService : Service() {
@@ -30,6 +32,7 @@ class TotOverlayService : Service() {
     private lateinit var overlayView: TotBuddyView
     private lateinit var overlayParams: WindowManager.LayoutParams
     private var overlayAttached = false
+    private var dockAnimation: ValueAnimator? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -92,29 +95,108 @@ class TotOverlayService : Service() {
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = preferences.getInt(KEY_X, (16 * density).toInt())
-                .coerceIn(0, (resources.displayMetrics.widthPixels - width).coerceAtLeast(0))
-            y = preferences.getInt(KEY_Y, (150 * density).toInt())
-                .coerceIn(0, (resources.displayMetrics.heightPixels - height).coerceAtLeast(0))
+            val savedCorner = preferences.getString(KEY_DOCKED_CORNER, null)
+                ?.takeIf { it in CORNERS }
+            val screen = resources.displayMetrics
+            x = if (savedCorner?.endsWith("left") == true) {
+                -width / 2
+            } else if (savedCorner?.endsWith("right") == true) {
+                screen.widthPixels - width / 2
+            } else {
+                preferences.getInt(KEY_X, (16 * density).toInt())
+                    .coerceIn(0, (screen.widthPixels - width).coerceAtLeast(0))
+            }
+            y = if (savedCorner?.startsWith("top") == true) {
+                -height / 2
+            } else if (savedCorner?.startsWith("bottom") == true) {
+                screen.heightPixels - height / 2
+            } else {
+                preferences.getInt(KEY_Y, (150 * density).toInt())
+                    .coerceIn(0, (screen.heightPixels - height).coerceAtLeast(0))
+            }
         }
+        overlayView.setDockedCorner(preferences.getString(KEY_DOCKED_CORNER, null)?.takeIf { it in CORNERS })
+        overlayView.onDragStarted = { dockAnimation?.cancel() }
         overlayView.onPositionChanged = {
-            preferences.edit().putInt(KEY_X, overlayParams.x).putInt(KEY_Y, overlayParams.y).apply()
+            preferences.edit()
+                .putInt(KEY_X, overlayParams.x)
+                .putInt(KEY_Y, overlayParams.y)
+                .putString(KEY_DOCKED_CORNER, overlayView.dockedCorner)
+                .apply()
         }
         overlayView.onDragged = { deltaX, deltaY ->
             val bounds = resources.displayMetrics
             overlayParams.x = (overlayParams.x + deltaX).coerceIn(
-                0,
-                (bounds.widthPixels - overlayParams.width).coerceAtLeast(0),
+                -overlayParams.width / 2,
+                (bounds.widthPixels - overlayParams.width / 2).coerceAtLeast(0),
             )
             overlayParams.y = (overlayParams.y + deltaY).coerceIn(
-                0,
-                (bounds.heightPixels - overlayParams.height).coerceAtLeast(0),
+                -overlayParams.height / 2,
+                (bounds.heightPixels - overlayParams.height / 2).coerceAtLeast(0),
             )
             windowManager.updateViewLayout(overlayView, overlayParams)
         }
+        overlayView.onDragFinished = { snapToNearestCorner() }
         windowManager.addView(overlayView, overlayParams)
         overlayAttached = true
     }
+
+    private fun snapToNearestCorner() {
+        val screen = resources.displayMetrics
+        val halfWidth = overlayParams.width / 2
+        val halfHeight = overlayParams.height / 2
+        val targets = mapOf(
+            "top_left" to (-halfWidth to -halfHeight),
+            "top_right" to (screen.widthPixels - halfWidth to -halfHeight),
+            "bottom_left" to (-halfWidth to screen.heightPixels - halfHeight),
+            "bottom_right" to (screen.widthPixels - halfWidth to screen.heightPixels - halfHeight),
+        )
+        val nearest = targets.minByOrNull { (_, point) ->
+            kotlin.math.hypot((overlayParams.x - point.first).toDouble(), (overlayParams.y - point.second).toDouble())
+        } ?: return
+        val distance = kotlin.math.hypot(
+            (overlayParams.x - nearest.value.first).toDouble(),
+            (overlayParams.y - nearest.value.second).toDouble(),
+        )
+        val threshold = maxOf(overlayParams.width, overlayParams.height) * 1.65
+        val shouldDock = distance <= threshold
+        val target = if (shouldDock) {
+            nearest.value
+        } else {
+            Pair(
+                overlayParams.x.coerceIn(0, (screen.widthPixels - overlayParams.width).coerceAtLeast(0)),
+                overlayParams.y.coerceIn(0, (screen.heightPixels - overlayParams.height).coerceAtLeast(0)),
+            )
+        }
+        overlayView.setDockedCorner(if (shouldDock) nearest.key else null)
+        dockAnimation?.cancel()
+        val startX = overlayParams.x
+        val startY = overlayParams.y
+        dockAnimation = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 240
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val progress = animation.animatedValue as Float
+                overlayParams.x = (startX + (target.first - startX) * progress).toInt()
+                overlayParams.y = (startY + (target.second - startY) * progress).toInt()
+                if (overlayAttached) windowManager.updateViewLayout(overlayView, overlayParams)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (overlayAttached) {
+                        preferencesForOverlay().edit()
+                            .putInt(KEY_X, overlayParams.x)
+                            .putInt(KEY_Y, overlayParams.y)
+                            .putString(KEY_DOCKED_CORNER, overlayView.dockedCorner)
+                            .apply()
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun preferencesForOverlay() = getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
     private fun openCompanion() {
         try {
@@ -165,7 +247,7 @@ class TotOverlayService : Service() {
         return builder
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("Tot is with you")
-            .setContentText("Drag Tot anywhere. Tap here to open Tot.")
+            .setContentText("Drag Tot to a corner to tuck him away. Tap to open Tot.")
             .setContentIntent(openApp)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Hide Tot", stopTot)
@@ -173,6 +255,7 @@ class TotOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        dockAnimation?.cancel()
         if (::overlayView.isInitialized && overlayAttached) {
             windowManager.removeView(overlayView)
             overlayAttached = false
@@ -192,6 +275,8 @@ class TotOverlayService : Service() {
         const val KEY_ENABLED = "tot_overlay_enabled"
         const val KEY_X = "tot_overlay_x"
         const val KEY_Y = "tot_overlay_y"
+        const val KEY_DOCKED_CORNER = "tot_overlay_docked_corner"
+        private val CORNERS = setOf("top_left", "top_right", "bottom_left", "bottom_right")
         private const val ACTION_STOP = "com.ki.companion.action.STOP_TOT"
         private const val ACTION_SET_ACTIVITY = "com.ki.companion.action.SET_TOT_ACTIVITY"
         private const val EXTRA_ACTIVITY = "activity"
@@ -248,7 +333,11 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
     private var startedAt = System.currentTimeMillis()
     private var activity = "idle"
     private var activityUntil = 0L
+    var dockedCorner: String? = null
+        private set
+    var onDragStarted: (() -> Unit)? = null
     var onDragged: ((Int, Int) -> Unit)? = null
+    var onDragFinished: (() -> Unit)? = null
     var onPositionChanged: (() -> Unit)? = null
 
     private val animation = object : Runnable {
@@ -271,8 +360,21 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
         invalidate()
     }
 
+    fun setDockedCorner(corner: String?) {
+        dockedCorner = corner
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val savedCanvas = if (dockedCorner != null) canvas.save() else -1
+        if (dockedCorner != null) {
+            canvas.translate(
+                if (dockedCorner!!.endsWith("left")) width / 2f else 0f,
+                if (dockedCorner!!.startsWith("top")) height / 2f else 0f,
+            )
+            canvas.scale(0.5f, 0.5f)
+        }
         val now = System.currentTimeMillis()
         val pulse = (0.5 + 0.5 * sin((now - startedAt) / 240.0)).toFloat()
         val bob = sin((now - startedAt) / 380.0).toFloat() * 1.5f * density
@@ -359,6 +461,7 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
         ringPaint.color = ringColor
         canvas.drawCircle(centerX, ringCenterY, (4f + pulse * 1.5f) * density, ringGlowPaint)
         canvas.drawCircle(centerX, ringCenterY, 3.2f * density, ringPaint)
+        if (savedCanvas >= 0) canvas.restoreToCount(savedCanvas)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -379,6 +482,7 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
                         kotlin.math.abs(event.rawY - downRawY) > 8f * density)
                 ) {
                     dragging = true
+                    onDragStarted?.invoke()
                 }
                 if (dragging) onDragged?.invoke(deltaX.toInt(), deltaY.toInt())
                 lastRawX = event.rawX
@@ -388,9 +492,11 @@ private class TotBuddyView(context: Context, private val onTap: () -> Unit) : Vi
             MotionEvent.ACTION_UP -> {
                 if (dragging) {
                     onPositionChanged?.invoke()
+                    onDragFinished?.invoke()
                 } else {
                     announceForAccessibility("Opening Tot chat.")
                     performClick()
+                    setActivity("happy")
                     onTap()
                 }
                 return true

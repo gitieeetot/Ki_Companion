@@ -153,6 +153,7 @@ private data class AgentEvent(
     val permissionTitle: String,
     val time: Long,
 )
+private data class SshConnectionInfo(val host: String, val username: String, val port: Int)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -188,6 +189,7 @@ private fun KiCompanionScreen(context: Context) {
     val showSshDialog = remember { mutableStateOf(false) }
     val sshUsername = remember { mutableStateOf(preferences.getString("ssh_username", "") ?: "") }
     val sshPort = remember { mutableStateOf(preferences.getString("ssh_port", "22") ?: "22") }
+    val sshHost = remember { mutableStateOf(preferences.getString("ssh_host", "") ?: "") }
     val chatModels = remember { mutableStateListOf<ChatModel>() }
     val selectedModel = remember {
         mutableStateOf(preferences.getString("chat_model", "qwen3:1.7b") ?: "qwen3:1.7b")
@@ -419,14 +421,20 @@ private fun KiCompanionScreen(context: Context) {
             return
         }
         try {
-            val sshHost = URI(normalizeHost(host.value)).host
-                ?: throw IOException("Pair Tot with Ki first to find your PC's private address.")
-            val command = "ssh -p $port $username@$sshHost"
+            val hostAddress = sshHost.value.trim().ifBlank {
+                URI(normalizeHost(host.value)).host
+                    ?: throw IOException("Scan the SSH QR or pair Tot with Ki to find your PC's private address.")
+            }
+            if (!isAllowedPrivateBridgeAddress(hostAddress)) {
+                throw IOException("Use a private LAN or Tailscale IP from Ki's SSH QR.")
+            }
+            val command = "ssh -p $port $username@$hostAddress"
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("PC SSH command", command))
             preferences.edit()
                 .putString("ssh_username", username)
                 .putString("ssh_port", port.toString())
+                .putString("ssh_host", hostAddress)
                 .apply()
             context.startActivity(termuxIntent)
             status.value = "SSH command copied. Paste it into Termux and review it before pressing Enter."
@@ -777,6 +785,26 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
+    val sshQrScanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents ?: return@rememberLauncherForActivityResult
+        try {
+            val connection = parseSshQr(contents)
+            sshHost.value = connection.host
+            sshUsername.value = connection.username
+            sshPort.value = connection.port.toString()
+            preferences.edit()
+                .putString("ssh_host", connection.host)
+                .putString("ssh_username", connection.username)
+                .putString("ssh_port", connection.port.toString())
+                .apply()
+            status.value = "SSH QR scanned. Review the host, username, and port before opening Termux."
+            statusIsError.value = false
+        } catch (error: IOException) {
+            status.value = error.message ?: "That is not a Ki SSH connection QR."
+            statusIsError.value = true
+        }
+    }
+
     val installPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -956,14 +984,7 @@ private fun KiCompanionScreen(context: Context) {
                 Text("VS Code", fontWeight = FontWeight.SemiBold)
             }
             OutlinedButton(
-                onClick = {
-                    if (host.value.isBlank()) {
-                        status.value = "Pair Tot with Ki first to prepare the PC SSH command."
-                        statusIsError.value = true
-                    } else {
-                        showSshDialog.value = true
-                    }
-                },
+                onClick = { showSshDialog.value = true },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFE0A64B).copy(alpha = 0.45f)),
@@ -1237,17 +1258,41 @@ private fun KiCompanionScreen(context: Context) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Tot will copy an SSH command and open Termux. Review and run the command yourself. Your PC must have OpenSSH Server enabled and be reachable on your private network or Tailscale.",
+                        "Scan the SSH QR shown in Ki's phone companion, or use the PC address from pairing. Tot copies the command and opens Termux; review and run it yourself. Your PC must have OpenSSH Server enabled and be reachable on your private network or Tailscale.",
                         color = KiMuted,
                         fontSize = 11.sp,
                         lineHeight = 16.sp,
                     )
+                    OutlinedButton(
+                        onClick = {
+                            sshQrScanner.launch(
+                                ScanOptions()
+                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    .setPrompt("Scan the separate SSH QR from Ki on your PC")
+                                    .setBeepEnabled(false),
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(13.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KiText),
+                    ) {
+                        Text("Scan SSH connection QR")
+                    }
                     OutlinedTextField(
                         value = sshUsername.value,
                         onValueChange = { sshUsername.value = it.take(64) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Windows username") },
                         singleLine = true,
+                        colors = kiTextFieldColors(),
+                    )
+                    OutlinedTextField(
+                        value = sshHost.value,
+                        onValueChange = { sshHost.value = it.take(64) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Private PC IP address") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         colors = kiTextFieldColors(),
                     )
                     OutlinedTextField(
@@ -2231,6 +2276,45 @@ private fun parsePairingCode(contents: String): Pair<String, String> {
     }
     if (token.isBlank() || token.length > 256) throw IOException("The QR code does not contain a valid pairing token.")
     return host to token
+}
+
+private fun parseSshQr(contents: String): SshConnectionInfo {
+    if (contents.length > 2_048) throw IOException("That QR code is too large to be an SSH connection code.")
+    val payload = try {
+        JSONObject(contents)
+    } catch (error: JSONException) {
+        throw IOException("That QR code is not a Ki SSH connection code.", error)
+    }
+    if (
+        payload.length() != 4 ||
+        !payload.has("type") ||
+        !payload.has("host") ||
+        !payload.has("username") ||
+        !payload.has("port")
+    ) {
+        throw IOException("The SSH QR must contain only a host, username, port, and Ki SSH code marker.")
+    }
+    val host = payload.optString("host").trim()
+    val username = payload.optString("username").trim()
+    val rawPort = payload.opt("port")
+    val port = when (rawPort) {
+        is Int -> rawPort
+        is Long -> rawPort.takeIf { it in 1L..65535L }?.toInt()
+        else -> null
+    }
+    if (payload.optString("type") != "ki-ssh") {
+        throw IOException("Scan the separate SSH connection QR shown in Ki's PC dialog.")
+    }
+    if (!isAllowedPrivateBridgeAddress(host)) {
+        throw IOException("The SSH QR must use a private LAN or Tailscale IPv4 address.")
+    }
+    if (!username.matches(Regex("[A-Za-z0-9._-]{1,64}"))) {
+        throw IOException("The SSH QR contains an invalid Windows username.")
+    }
+    if (port == null || port !in 1..65535) {
+        throw IOException("The SSH QR contains an invalid port.")
+    }
+    return SshConnectionInfo(host, username, port)
 }
 
 private fun normalizeHost(value: String): String {

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
+
 from .shared import *
 from .services import local_agent_tool_status, system_speech_voices
+from .phone_bridge import phone_connection_addresses
+from .ssh_server import PRIVATE_SSH_NETWORKS, create_ssh_qr_payload
 
 class DraggableHeader(QFrame):
     """Dashboard header that lets the frameless panel be moved."""
@@ -269,11 +273,13 @@ class GitToolsDialog(QDialog):
         self.output.setPlainText(report)
 
 class PhoneCompanionDialog(QDialog):
-    def __init__(self, bridge, parent=None):
+    def __init__(self, bridge, ssh_manager, parent=None):
         super().__init__(parent)
         self.bridge = bridge
+        self.ssh_manager = ssh_manager
+        self.ssh_settings = QSettings("Ki", "KiDesktopAssistant")
         self.setWindowTitle("Ki phone companion")
-        self.setMinimumSize(460, 620)
+        self.setMinimumSize(460, 720)
         self.setStyleSheet("""
             QDialog { background:#30343a; color:#f2f4f6; }
             QWidget#phoneCompanionContent { background:#30343a; }
@@ -285,6 +291,8 @@ class PhoneCompanionDialog(QDialog):
             QComboBox QAbstractItemView { background:#3a3f46; color:#f2f4f6; selection-background-color:#505963; }
             QPushButton { background:#3a3f46; color:#f2f4f6; border:1px solid #555c65; border-radius:10px; padding:0 10px; min-height:36px; }
             QPushButton:hover { background:#4a515a; }
+            QLineEdit { background:#3a3f46; color:#f2f4f6; border:1px solid #555c65; border-radius:7px; padding:6px; }
+            QCheckBox { color:#f2f4f6; }
         """)
         layout = QVBoxLayout(self)
         self.content = QWidget()
@@ -334,6 +342,54 @@ class PhoneCompanionDialog(QDialog):
         warning.setWordWrap(True)
         warning.setStyleSheet("color:#e7b96e;")
         content_layout.addWidget(warning)
+
+        ssh_title = QLabel("Connect Termux to this PC")
+        ssh_title.setStyleSheet("font-size:16px; font-weight:700; margin-top:8px;")
+        content_layout.addWidget(ssh_title)
+        self.ssh_status_label = QLabel()
+        self.ssh_status_label.setObjectName("muted")
+        self.ssh_status_label.setWordWrap(True)
+        content_layout.addWidget(self.ssh_status_label)
+        self.ssh_start_on_launch = QCheckBox("Start OpenSSH Server when Ki opens")
+        self.ssh_start_on_launch.setChecked(self.ssh_settings.value("start_ssh_with_ki", False, type=bool))
+        self.ssh_start_on_launch.toggled.connect(self.toggle_ssh_start_on_launch)
+        content_layout.addWidget(self.ssh_start_on_launch)
+        ssh_inputs = QHBoxLayout()
+        self.ssh_username = QLineEdit(self.ssh_settings.value("ssh_username", os.environ.get("USERNAME", "")))
+        self.ssh_username.setMaxLength(64)
+        self.ssh_username.setPlaceholderText("Windows username")
+        ssh_inputs.addWidget(self.ssh_username, 2)
+        self.ssh_port = QLineEdit(self.ssh_settings.value("ssh_port", "22"))
+        self.ssh_port.setMaxLength(5)
+        self.ssh_port.setPlaceholderText("Port")
+        self.ssh_port.setFixedWidth(80)
+        ssh_inputs.addWidget(self.ssh_port)
+        content_layout.addLayout(ssh_inputs)
+        self.ssh_qr_address = QComboBox()
+        self.ssh_qr_address.setToolTip("Choose the private network address your phone can reach.")
+        self.ssh_qr_address.currentIndexChanged.connect(self.refresh_ssh_qr)
+        content_layout.addWidget(self.ssh_qr_address)
+        self.ssh_qr_label = QLabel()
+        self.ssh_qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ssh_qr_label.setFixedSize(200, 200)
+        self.ssh_qr_label.setStyleSheet("background:#f5f7f8; border-radius:12px;")
+        content_layout.addWidget(self.ssh_qr_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.ssh_qr_help = QLabel(
+            "Scan this separate QR in Tot to prepare a Termux command. It contains only the private PC address, "
+            "username, and port—never a password, key, or Ki pairing token. Review the command before running it."
+        )
+        self.ssh_qr_help.setObjectName("muted")
+        self.ssh_qr_help.setWordWrap(True)
+        content_layout.addWidget(self.ssh_qr_help)
+        ssh_buttons = QHBoxLayout()
+        self.start_ssh_button = QPushButton("Start SSH now")
+        self.start_ssh_button.clicked.connect(self.start_ssh_server)
+        ssh_buttons.addWidget(self.start_ssh_button)
+        self.stop_ssh_button = QPushButton("Stop SSH")
+        self.stop_ssh_button.clicked.connect(self.stop_ssh_server)
+        ssh_buttons.addWidget(self.stop_ssh_button)
+        content_layout.addLayout(ssh_buttons)
+
         buttons = QHBoxLayout()
         self.toggle_button = QPushButton()
         self.toggle_button.clicked.connect(self.toggle_bridge)
@@ -345,6 +401,9 @@ class PhoneCompanionDialog(QDialog):
         close_button.clicked.connect(self.accept)
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
+        self.ssh_manager.operation_finished.connect(self.on_ssh_operation_finished)
+        self.ssh_username.textChanged.connect(self.persist_ssh_inputs)
+        self.ssh_port.textChanged.connect(self.persist_ssh_inputs)
         self.refresh_state()
 
     def refresh_state(self):
@@ -379,6 +438,146 @@ class PhoneCompanionDialog(QDialog):
             self.qr_address.clear()
             self.token_label.clear()
             self.toggle_button.setText("Enable phone access")
+        self.refresh_ssh_state()
+
+    def refresh_ssh_state(self):
+        status = self.ssh_manager.status()
+        if status.error:
+            self.ssh_status_label.setText(f"SSH status could not be checked: {status.error}")
+        elif not status.installed:
+            self.ssh_status_label.setText(
+                "Windows OpenSSH Server is not installed. Ki has the SSH client, but Termux needs the PC server. "
+                "Install OpenSSH Server in Windows Settings → System → Optional features."
+            )
+        else:
+            server_state = "running" if status.running else "stopped"
+            tailnet = (
+                f"Tailscale connected at {status.tailscale_ipv4}"
+                if status.tailscale_ipv4
+                else f"Tailscale {status.tailscale_state.lower()}"
+            )
+            self.ssh_status_label.setText(f"OpenSSH Server: {server_state}. {tailnet}.")
+        self.start_ssh_button.setEnabled(status.installed)
+        self.stop_ssh_button.setEnabled(status.installed and status.running)
+
+        current_address = self.ssh_qr_address.currentData()
+        addresses = []
+        for address in phone_connection_addresses():
+            try:
+                parsed = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if parsed.version == 4 and any(parsed in network for network in PRIVATE_SSH_NETWORKS):
+                addresses.append(str(parsed))
+        if status.tailscale_ipv4 and status.tailscale_ipv4 not in addresses:
+            addresses.insert(0, status.tailscale_ipv4)
+        addresses = list(dict.fromkeys(addresses))
+
+        self.ssh_qr_address.blockSignals(True)
+        self.ssh_qr_address.clear()
+        for address in addresses:
+            label = "Tailscale" if address == status.tailscale_ipv4 else "Private network"
+            self.ssh_qr_address.addItem(f"{label} · {address}", address)
+        if not addresses:
+            self.ssh_qr_address.addItem("No private network address found", "")
+        self.ssh_qr_address.setEnabled(bool(addresses))
+        selected_index = self.ssh_qr_address.findData(current_address)
+        if selected_index >= 0:
+            self.ssh_qr_address.setCurrentIndex(selected_index)
+        self.ssh_qr_address.blockSignals(False)
+        self.refresh_ssh_qr()
+
+    def refresh_ssh_qr(self):
+        address = self.ssh_qr_address.currentData()
+        username = self.ssh_username.text().strip()
+        port = self.ssh_port.text().strip()
+        if (
+            not address
+            or not username
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username)
+            or not port.isdecimal()
+            or not 1 <= int(port) <= 65535
+        ):
+            self.ssh_qr_label.clear()
+            return
+        try:
+            import qrcode
+
+            payload = create_ssh_qr_payload(address, username, int(port))
+            image = qrcode.make(payload).convert("RGB")
+            qr_image = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                image.width * 3,
+                QImage.Format.Format_RGB888,
+            ).copy()
+            self.ssh_qr_label.setPixmap(QPixmap.fromImage(qr_image).scaled(
+                184,
+                184,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        except (ImportError, OSError, ValueError) as error:
+            self.ssh_qr_label.clear()
+            self.ssh_status_label.setText(f"Could not create the SSH QR: {error}")
+
+    def persist_ssh_inputs(self):
+        previous_port = str(self.ssh_settings.value("ssh_port", "22"))
+        current_port = self.ssh_port.text().strip()
+        self.ssh_settings.setValue("ssh_username", self.ssh_username.text().strip())
+        self.ssh_settings.setValue("ssh_port", current_port)
+        if current_port != previous_port:
+            self.ssh_settings.setValue("ssh_firewall_configured", False)
+        self.refresh_ssh_qr()
+
+    def current_ssh_port(self):
+        value = self.ssh_port.text().strip()
+        if not value.isdecimal():
+            return None
+        port = int(value)
+        return port if 1 <= port <= 65535 else None
+
+    def toggle_ssh_start_on_launch(self, enabled):
+        self.ssh_settings.setValue("start_ssh_with_ki", enabled)
+        if enabled:
+            if self.current_ssh_port() is None:
+                self.ssh_start_on_launch.setChecked(False)
+                self.ssh_settings.setValue("start_ssh_with_ki", False)
+                QMessageBox.warning(self, "Invalid SSH port", "Enter a port between 1 and 65535 before enabling start-with-Ki.")
+                return
+            status = self.ssh_manager.status()
+            if not status.installed:
+                self.ssh_start_on_launch.setChecked(False)
+                self.ssh_settings.setValue("start_ssh_with_ki", False)
+                QMessageBox.warning(
+                    self,
+                    "OpenSSH Server is not installed",
+                    "Install Windows OpenSSH Server before enabling start-with-Ki.",
+                )
+            elif not status.running or not self.ssh_settings.value("ssh_firewall_configured", False, type=bool):
+                self.start_ssh_server()
+
+    def start_ssh_server(self):
+        port = self.current_ssh_port()
+        if port is None:
+            self.ssh_status_label.setText("Enter an SSH port between 1 and 65535.")
+            return
+        self.persist_ssh_inputs()
+        if not self.ssh_manager.start_async(port):
+            self.ssh_status_label.setText("An OpenSSH service action is already waiting for administrator approval.")
+
+    def stop_ssh_server(self):
+        if not self.ssh_manager.stop_async():
+            self.ssh_status_label.setText("An OpenSSH service action is already waiting for administrator approval.")
+
+    def on_ssh_operation_finished(self, action, succeeded, message):
+        self.ssh_status_label.setText(message)
+        if action == "start" and succeeded:
+            self.ssh_settings.setValue("ssh_firewall_configured", True)
+        if not succeeded:
+            QMessageBox.warning(self, "OpenSSH Server", message)
+        self.refresh_ssh_state()
 
     def toggle_bridge(self):
         try:
@@ -659,6 +858,7 @@ class DashboardWindow(QDialog):
         self.quit_callback = None
         self.chat_navigation_callback = None
         self.phone_bridge = None
+        self.ssh_manager = None
         self._agent_latest_event = None
         self._music_is_playing = False
         self.setWindowTitle("Ki Dashboard")
@@ -1040,7 +1240,10 @@ class DashboardWindow(QDialog):
         if self.phone_bridge is None:
             QMessageBox.warning(self, "Phone companion unavailable", "The phone companion service is not available.")
             return
-        dialog = PhoneCompanionDialog(self.phone_bridge, self)
+        if self.ssh_manager is None:
+            QMessageBox.warning(self, "SSH controls unavailable", "The Windows SSH service manager is not available.")
+            return
+        dialog = PhoneCompanionDialog(self.phone_bridge, self.ssh_manager, self)
         dialog.exec()
 
     def open_ki_summary(self):

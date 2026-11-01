@@ -19,9 +19,9 @@ from ctypes import wintypes
 import os
 import shutil
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QThread, Signal, QSettings, QObject, QEvent, QUrl, QSize, QBuffer, QIODevice
+from PySide6.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QThread, Signal, QSettings, QObject, QEvent, QUrl, QSize, QBuffer, QIODevice, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QFont, QDesktopServices, QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFrame, QScrollArea, QComboBox, QMessageBox, QFileDialog, QGridLayout, QSizeGrip, QSizePolicy, QPlainTextEdit, QProgressBar, QSlider, QMenu, QStackedWidget, QInputDialog
+from PySide6.QtWidgets import QApplication, QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFrame, QScrollArea, QComboBox, QMessageBox, QFileDialog, QGridLayout, QSizeGrip, QSizePolicy, QPlainTextEdit, QProgressBar, QSlider, QMenu, QStackedWidget, QInputDialog, QCheckBox
 import json
 import urllib.error
 import urllib.request

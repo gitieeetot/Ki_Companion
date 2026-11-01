@@ -6,6 +6,7 @@ from .chat import ChatWindow
 from .dashboard import DashboardWindow, GitToolsDialog
 from .panel import CompanionWindow
 from .phone_bridge import PhoneCompanionServer
+from .ssh_server import OpenSSHManager
 
 WALK_STEPS = 20
 WALK_DISTANCE_X = 120
@@ -24,6 +25,8 @@ class RobotWidget(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAcceptDrops(True)
+        self._docked_corner = None
+        self._position_animation = None
         self.state = "idle"
         self.phase = 0.0
         self._drag_offset = None
@@ -79,9 +82,11 @@ class RobotWidget(QWidget):
         self.phone_bridge.chat_received.connect(self.chat.show_phone_conversation)
         self.phone_bridge.speak_requested.connect(self.chat.speak_phone_reply)
         self.phone_bridge.vscode_context_requested.connect(self.chat.get_vscode_selection_for_phone)
+        self.ssh_manager = OpenSSHManager(self)
         self.dashboard = DashboardWindow(self.chat, self.agent_monitor)
         self.dashboard.quit_callback = self.request_quit
         self.dashboard.phone_bridge = self.phone_bridge
+        self.dashboard.ssh_manager = self.ssh_manager
         self.companion = CompanionWindow(self.chat, self.dashboard)
         self.chat.dashboard_navigation_callback = lambda: self.show_companion("controls")
         self.chat.dashboard_settings_callback = self.open_dashboard_audio_settings
@@ -97,10 +102,61 @@ class RobotWidget(QWidget):
         screen = QApplication.primaryScreen()
         if screen:
             area = screen.availableGeometry()
-            self.move(self.clamp_to_safe_area(
-                QPoint(area.right() - self.width() - 36, area.bottom() - self.height() - 44),
-                screen,
-            ))
+            saved_corner = QSettings("Ki", "KiDesktopAssistant").value("robot_docked_corner", "")
+            if saved_corner in {"top_left", "top_right", "bottom_left", "bottom_right"}:
+                self._docked_corner = saved_corner
+                self.move(self.dock_position(area, saved_corner))
+            else:
+                self.move(self.clamp_to_safe_area(
+                    QPoint(area.right() - self.width() - 36, area.bottom() - self.height() - 44),
+                    screen,
+                ))
+        QTimer.singleShot(1800, self.start_ssh_if_enabled)
+
+    def start_ssh_if_enabled(self):
+        settings = QSettings("Ki", "KiDesktopAssistant")
+        status = self.ssh_manager.status()
+        tailscale = (
+            f"connected at {status.tailscale_ipv4}"
+            if status.tailscale_ipv4
+            else status.tailscale_state.lower()
+        )
+        self.setToolTip(f"Tailscale {tailscale}; OpenSSH Server {'installed' if status.installed else 'not installed'}.")
+        if not settings.value("start_ssh_with_ki", False, type=bool):
+            return
+        if status.error:
+            QMessageBox.warning(self, "OpenSSH Server status", status.error)
+            return
+        if not status.installed:
+            QMessageBox.warning(
+                self,
+                "OpenSSH Server is not installed",
+                "Start-with-Ki is enabled, but Windows OpenSSH Server is missing. Install it from Settings → System → Optional features.",
+            )
+            return
+        if status.running and settings.value("ssh_firewall_configured", False, type=bool):
+            return
+        try:
+            port = int(settings.value("ssh_port", "22"))
+        except (TypeError, ValueError):
+            QMessageBox.warning(self, "Invalid SSH port", "Set an SSH port between 1 and 65535 in Ki's phone companion.")
+            return
+        if not 1 <= port <= 65535:
+            QMessageBox.warning(self, "Invalid SSH port", "Set an SSH port between 1 and 65535 in Ki's phone companion.")
+            return
+        self.ssh_manager.operation_finished.connect(self.on_ssh_startup_finished)
+        if not self.ssh_manager.start_async(port):
+            self.ssh_manager.operation_finished.disconnect(self.on_ssh_startup_finished)
+
+    def on_ssh_startup_finished(self, action, succeeded, message):
+        if action != "start":
+            return
+        self.ssh_manager.operation_finished.disconnect(self.on_ssh_startup_finished)
+        if succeeded:
+            QSettings("Ki", "KiDesktopAssistant").setValue("ssh_firewall_configured", True)
+            self.setToolTip(message)
+        else:
+            QMessageBox.warning(self, "Could not start OpenSSH Server", message)
 
     def open_chat(self):
         self.show_companion("chat")
@@ -130,6 +186,60 @@ class RobotWidget(QWidget):
             max(min_x, min(position.x(), max_x)),
             max(min_y, min(position.y(), max_y)),
         )
+
+    def clamp_to_drag_area(self, position, screen=None):
+        screen = screen or QApplication.screenAt(
+            position + QPoint(self.width() // 2, self.height() // 2)
+        ) or QApplication.primaryScreen()
+        if screen is None:
+            return position
+        area = screen.availableGeometry()
+        half_width = self.width() // 2
+        half_height = self.height() // 2
+        return QPoint(
+            max(area.left() - half_width, min(position.x(), area.right() + 1 - half_width)),
+            max(area.top() - half_height, min(position.y(), area.bottom() + 1 - half_height)),
+        )
+
+    def dock_position(self, area, corner):
+        half_width = self.width() // 2
+        half_height = self.height() // 2
+        return QPoint(
+            area.left() - half_width if corner.endswith("left") else area.right() + 1 - half_width,
+            area.top() - half_height if corner.startswith("top") else area.bottom() + 1 - half_height,
+        )
+
+    def snap_to_nearest_corner(self, pointer_position):
+        screen = QApplication.screenAt(pointer_position) or QApplication.screenAt(
+            self.frameGeometry().center()
+        ) or QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        targets = {
+            corner: self.dock_position(area, corner)
+            for corner in ("top_left", "top_right", "bottom_left", "bottom_right")
+        }
+        corner, target = min(
+            targets.items(),
+            key=lambda item: math.hypot(self.x() - item[1].x(), self.y() - item[1].y()),
+        )
+        distance = math.hypot(self.x() - target.x(), self.y() - target.y())
+        if distance > max(self.width(), self.height()) * 1.65:
+            self._docked_corner = None
+            QSettings("Ki", "KiDesktopAssistant").remove("robot_docked_corner")
+            self.move(self.clamp_to_safe_area(self.pos(), screen))
+            self.update()
+            return
+        self._docked_corner = corner
+        QSettings("Ki", "KiDesktopAssistant").setValue("robot_docked_corner", corner)
+        self._position_animation = QPropertyAnimation(self, b"pos", self)
+        self._position_animation.setDuration(240)
+        self._position_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._position_animation.setStartValue(self.pos())
+        self._position_animation.setEndValue(target)
+        self._position_animation.start()
+        self.update()
 
     def interrupt_idle_pose(self, expression="surprised"):
         if self._walk_origin is not None and self._walk_return_start is None:
@@ -363,7 +473,7 @@ class RobotWidget(QWidget):
             self.expression = None
         if now >= self._click_fx_until:
             self._click_fx_kind = ""
-        if self._walk_return_start is not None and self._walk_return_target is not None:
+        if self._walk_return_start is not None and self._walk_return_target is not None and not self._docked_corner:
             progress = min(
                 1.0,
                 max(0.0, (now - self._walk_return_started) / self._walk_return_duration),
@@ -395,6 +505,7 @@ class RobotWidget(QWidget):
                 and not self.audio_connecting
                 and not self.audio_ready
                 and not self._transition_kind
+                and not self._docked_corner
                 and now >= self._next_idle_pose
             ):
                 self._idle_pose = random.choice(("stand", "walk", "sit", "hide"))
@@ -458,6 +569,9 @@ class RobotWidget(QWidget):
         now = time.monotonic()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._docked_corner:
+            p.translate(52 if self._docked_corner.endswith("left") else 0, 52 if self._docked_corner.startswith("top") else 0)
+            p.scale(0.5, 0.5)
         pulse = 0.5 + 0.5 * math.sin(self.phase)
         dancing = self.state == "idle" and (
             self.music_singing or now < self._random_dance_until
@@ -620,6 +734,8 @@ class RobotWidget(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._position_animation is not None:
+                self._position_animation.stop()
             self._press_global = event.globalPosition().toPoint()
             self._drag_offset = self._press_global - self.frameGeometry().topLeft()
             self._last_drag_global = self._press_global
@@ -725,7 +841,22 @@ class RobotWidget(QWidget):
                 self.gaze_x = max(-3.0, min(3.0, self.gaze_x + delta.x() * 0.25))
                 self.gaze_y = max(-2.0, min(2.0, self.gaze_y + delta.y() * 0.20))
             self._last_drag_global = current
-            self.move(self.clamp_to_safe_area(current - self._drag_offset))
+            next_position = self.clamp_to_drag_area(
+                current - self._drag_offset,
+                QApplication.screenAt(current),
+            )
+            area_screen = QApplication.screenAt(current) or QApplication.primaryScreen()
+            if self._docked_corner and area_screen is not None:
+                area = area_screen.availableGeometry()
+                fully_visible = (
+                    next_position.x() >= area.left()
+                    and next_position.y() >= area.top()
+                    and next_position.x() + self.width() <= area.right() + 1
+                    and next_position.y() + self.height() <= area.bottom() + 1
+                )
+                if fully_visible:
+                    self._docked_corner = None
+            self.move(next_position)
             self.raise_()
             self.update()
             event.accept()
@@ -753,4 +884,6 @@ class RobotWidget(QWidget):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             if not was_dragging and distance < QApplication.startDragDistance():
                 self.react_to_tap()
+            elif was_dragging:
+                self.snap_to_nearest_corner(event.globalPosition().toPoint())
             event.accept()
