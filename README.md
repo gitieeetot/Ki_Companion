@@ -5,223 +5,214 @@
 [![Latest Android release](https://img.shields.io/github/v/release/gitieeetot/Ki_Companion?display_name=tag&label=Android%20release)](https://github.com/gitieeetot/Ki_Companion/releases/latest)
 [![Android release workflow](https://github.com/gitieeetot/Ki_Companion/actions/workflows/android-release.yml/badge.svg)](https://github.com/gitieeetot/Ki_Companion/actions/workflows/android-release.yml)
 
-**[Download the latest Tot APK](https://github.com/gitieeetot/Ki_Companion/releases/latest/download/TotCompanion.apk)** · [Browse releases](https://github.com/gitieeetot/Ki_Companion/releases)
+**[Download Tot for Android](https://github.com/gitieeetot/Ki_Companion/releases/latest/download/TotCompanion.apk)** · [Browse all releases](https://github.com/gitieeetot/Ki_Companion/releases)
 
-Ki & Tot pairs a Windows desktop assistant with a native Android companion. Local Ollama models handle chat on your PC; Tot connects over a private, explicitly paired network. Actions that can affect your PC require your review and approval.
-
-## Overview
-
-- **Ki (Windows):** local AI chat, optional image analysis and web search, voice input, VS Code context, and reviewed project edits.
-- **Tot (Android):** mobile chat and voice, photo workflows, SSH/Termux shortcuts, and a compact animated floating companion.
-- **Private by design:** local AI runs through Ollama on your PC. Phone access is opt-in, authenticated, and intended for a trusted network or Tailscale.
+Ki is a Windows desktop companion powered by local Ollama models. Tot is its Android companion for chat and remote project work. Pairing is opt-in; actions that change PC files or approve agent requests require your review.
 
 ## Contents
 
-- [Features](#features)
-- [Tot for Android](#tot-for-android)
+- [What’s included](#whats-included)
 - [Requirements](#requirements)
-- [One-time setup](#one-time-setup)
-- [Open Ki without a terminal](#open-ki-without-a-terminal)
-- [OpenCode local agent](#opencode-local-agent)
-- [OpenCode sessions on Tot](#opencode-sessions-on-tot)
-- [Publishing Android updates](#publishing-android-updates-on-github)
+- [Install and run Ki](#install-and-run-ki)
+- [Use Tot with Ki](#use-tot-with-ki)
+- [Use the local OpenCode agent](#use-the-local-opencode-agent)
+- [Privacy and security](#privacy-and-security)
+- [Build and test](#build-and-test)
+- [Publish an Android release](#publish-an-android-release)
+- [Repository layout](#repository-layout)
 
-## Features
+## What’s included
 
-- Chat with Qwen3:0.6b by default through Ollama running on this computer. Choose Qwen3:1.7b in Ki or Tot for harder coding and reasoning tasks; Ki unloads the other managed model when switching.
-- Select one screenshot or photo for local analysis with the optional Moondream vision model. Ki resizes images before sending them to Ollama, can read legible screenshot text, and unloads the last Ki-selected model before switching between chat and vision so Ki does not intentionally keep both models loaded.
-- Click **Code** after copying a selection from VS Code to let Ki review that text. Ki does not watch VS Code or read the clipboard until you click the button.
-- Optionally enable **Web** in the chat composer to search Google and ask Ki about current information. If Google blocks the direct request, Ki automatically retries with DuckDuckGo. Ki uses the result snippets with the local Ollama model and shows source URLs in its reply. Web search is off by default; when enabled, your search query is sent to the search provider, while the AI request remains local.
-- With **Web** enabled for an image question, Ki first analyzes the image locally, then sends only the typed question and a short text description to web search; the image itself is not uploaded to the search provider.
-- Open Calculator or Notepad after showing a confirmation prompt. The resizable dashboard shows battery, opens Task Manager, Snipping Tool, or Spotify, provides Windows media playback keys, searches Google in your default browser, and lets you add selected .exe app tiles with confirmation before launch. Spotify playback buttons use Windows media controls and may control whichever media player currently owns them.
-- Choose a listening source in the dashboard’s Voice & sound settings: nearby voices through a microphone, laptop playback audio, or both. Ki transcribes English locally with Vosk. Spoken replies use a selected Windows voice. Emoji stay visible in chat but are skipped in spoken replies.
-- Keep recent chat context during the current app session.
-- Right-click Ki’s floating face for read-only Git status, changed-file diff, and recent commit views. Ki does not stage, commit, push, or modify files through these tools.
-- Drop supported text/data files onto Ki’s face to add them to the selected project when Project mode is active, or to chat attachments otherwise. Ki briefly animates as it accepts the files.
-- Show expressive face reactions while idle, listening, thinking, speaking, and briefly when clicked. Ki's new minimalist display face has two bright eyes, a simple animated mouth, and a status ring that changes while listening. Ki looks toward the pointer, blinks, and occasionally changes expression while idle. While idle, Ki may also randomly stand, walk around its spot for about 20 steps over 12–15 seconds, then return, sit, or tuck away its hands and feet. The walk covers a wider area while keeping Ki inset from screen edges. Interrupting a walk shows a reaction and animates Ki back to its starting position. The status ring turns red only after audio capture is ready and while the microphone is active. When media is playing, Ki dances and its mouth animates with the audio; the dance stops when playback stops. Ki also occasionally does a short spontaneous dance while idle. Ki reflects Windows battery/charging and CPU busy/idle status. Drag the floating face to move it; single-click for a playful reaction, double-click to open the chat/control panel, or right-click for Git tools.
+### Ki for Windows
 
-Audio capture stays off until you press **Talk**, hold **Ctrl + Alt + Space**, or explicitly start ambient listening in Dashboard → Voice & sound. Choose the microphone and source in that dashboard setting. Laptop sound uses Windows audio loopback and captures whatever the computer is playing. Ki keeps its face in a ready state while the local Vosk speech model and microphone are starting; the red listening indicator appears only after audio capture is ready. For **Talk** and the global shortcut, Ki sends a completed transcript automatically. Its chat bubble then offers **Edit** (send a correction as a new message), **Retry** (record and send again), and **Delete** (remove it from Ki's local chat history). Deleting cannot retract a prompt already sent to the model. Ambient listening remains review-first: recognized words are added to the message box and are never auto-sent. While Ki is speaking, press **Ctrl + Alt + Backspace** to stop the reply, or hold **Ctrl + Alt + Space** to interrupt it and start listening. Mic input uses shorter audio blocks and transcription ends after a brief phrase-ending pause; Ki drains the last captured audio before finalizing. It stops after 30 seconds or when you press **Stop**. Audio is processed in memory and is not saved or uploaded. The English speech model downloads on first use and is cached locally. Ki transcribes speech locally with Vosk; a first use may take longer while the model loads. The local Ollama API is contacted only at 127.0.0.1. Ki does not call a cloud AI API. Project mode edits only the files you select, only in Edit mode, and only after you review the diff and approve it. Existing files are backed up in .ki-backups. Ki does not delete files or run arbitrary terminal commands. Its Git tools run only read-only status, diff, and recent-log commands. It can open only Calculator or Notepad after you confirm, and reads Windows battery and CPU activity status for the face reaction.
+- Chat through Ollama using Qwen3:0.6b by default; Qwen3:1.7b is available for more demanding tasks.
+- Optional image analysis with the local Moondream vision model.
+- Optional web search. Search queries go to the search provider; AI responses are generated locally.
+- English speech recognition with Vosk, Windows text-to-speech, and optional microphone or system-audio input.
+- Review-first project mode for supported text files in a selected folder. Ki shows a diff before saving and backs up existing files.
+- A desktop companion with voice controls, dashboard tools, and read-only Git status, diff, and history.
 
-Wake-word and clap detection are not implemented. Ambient listening is an explicit dashboard toggle: it stays off until you start it and shows a listening status while active.
+### Tot for Android
 
-## Tot for Android
-
-Tot is the native Android companion (Android 8.0 or newer); Ki remains on Windows and answers chats on the PC.
-
-- **Chat and voice:** charcoal-and-cyan chat UI, voice input and replies, microphone readiness feedback, and editable voice messages with **Edit**, **Retry**, and **Delete** actions.
-- **Animated buddy:** a compact display face with expressive eyes, mouth, and status ring, without arms or legs. Home has no decorative face artwork; **Wake Tot** still shows or hides the floating overlay.
-- **Local AI:** choose an installed Ollama model on Ki's PC. Qwen3:0.6b is the default; Qwen3:1.7b is available for harder tasks. Tot does not download models automatically. On the PC, run `ollama pull qwen3:0.6b` or `ollama pull qwen3:1.7b`, then tap **Refresh** in Tot. Model licenses vary.
-- **Workspace & connections:** one Home button opens Ki PC pairing, an in-app **Browse Projects** editor, Termux SSH, and remote VS Code. Tot's editor is limited to existing UTF-8 text files under `%USERPROFILE%\Projects`; it excludes Git metadata and most hidden files, limits edits to 256 KB, checks for outside changes, and requires reviewing a diff before saving. It does not create or delete files. The Termux shortcut opens a PowerShell session in `%USERPROFILE%\Projects`, creating that folder if needed; SSH runs with your Windows account's permissions and is not sandboxed to Projects.
-- **Remote VS Code:** from the Termux SSH session in `Projects`, run `code tunnel --accept-server-license-terms --name TotLaptop`, sign in to GitHub when prompted, and leave the tunnel running. Copy the `vscode.dev/tunnel/...` link printed by the command, paste it into Tot under **Workspace & connections → Remote VS Code**, and open it in your phone's browser. The tunnel runs with your Windows account's permissions and can access more than `Projects`. The PC must stay awake and online. VS Code Tunnel is separate from SSH; neither service should be exposed with a router port-forward.
-- **VS Code context:** the separate **Add copied VS Code selection to chat** action requests the text you copied on the PC and adds it to Tot's draft for review; it does not display the full editor.
-- **Photos:** **Read text** runs on-device OCR; **Google Lens** opens Android's share chooser; **Ask Ki about image** sends the selected, resized image to Ki's PC for local Ollama analysis.
-- **Updates:** check public GitHub Releases, download the verified APK, and hand off installation to Android for your confirmation.
-
-Tot does not run PC commands autonomously. Android speech recognition may send audio to its provider, depending on your selected provider and settings; check that provider's privacy policy. Update checks require a public repository and public releases.
-
-To pair, put both devices on the same trusted Wi-Fi/hotspot, or install Tailscale on both and sign in to the same private tailnet. In Ki, open Dashboard → Device & activity → Phone companion and enable phone access. In the Android app tap **Scan PC pairing QR**, then point the camera at the QR code in Ki's PC dialog. You can also enter the private address and token manually. If Windows asks about the firewall, allow Python on private networks only. USB file-transfer/MTP mode by itself is not a network connection. Ki binds only to private local addresses and a detected Tailscale interface; do not port-forward Ki's port or expose it to the public internet. The QR includes the local pairing token, so display and scan it only on a trusted network.
-
-### Using Tailscale away from home
-
-1. Install Tailscale on the Windows PC from [tailscale.com/download](https://tailscale.com/download) and on the Android phone from Google Play or [Tailscale's Android page](https://tailscale.com/kb/1020/install-android/).
-2. Sign in to the **same tailnet** on both devices and leave Tailscale connected. They do not need to be on the same Wi-Fi.
-3. On the PC, open Ki → **Dashboard → Device & activity → Phone companion** and enable phone access. In the address dropdown, select the PC's `100.x.x.x` Tailscale address so the QR code contains the Tailscale route, rather than a home Wi-Fi address.
-4. In Tot, open **Settings → Scan PC pairing QR** and scan that code. Tap **Test connection** to confirm Ki and Ollama are reachable.
-5. To troubleshoot, check that both devices show connected in Tailscale, rescan the QR using the `100.x.x.x` entry, and allow Python through Windows Firewall on private networks if Windows asks. If pairing details are already saved, choose the Tailscale address in the PC dialog and scan again.
-
-Tailscale encrypts traffic between devices in your private tailnet. Keep Ki phone access enabled only while you want it, protect the pairing QR/token, and never create a router port-forward for Ki.
-
-### Open the PC terminal with Termux
-
-From Tot's **Workspace & connections** screen, choose **Browse Projects in Tot** for the in-app editor or **Termux SSH** for a Windows terminal. The in-app editor uses Ki's authenticated phone connection over trusted Wi-Fi or Tailscale; the PC must be awake with Ki's phone companion enabled. In Ki's **Dashboard → Device & activity → Phone companion**, install Windows **OpenSSH Server** from Settings → System → Optional features if it is missing. Ki can start and stop the server with administrator approval. **Start OpenSSH Server when Ki opens** is opt-in and off by default; the service remains running after Ki closes until you stop it from the same Ki dialog. Ki does not enable SSH at Windows boot.
-
-The Ki dialog shows a second, separate **SSH connection QR**. It contains only a private PC IP address, Windows username, and port—never a password, private key, or Ki pairing token. In Tot, choose **Workspace & connections → Termux SSH → Scan SSH connection QR**, review the details, then choose **Copy command & open Termux**. Paste and run the command yourself. It creates `%USERPROFILE%\Projects` if needed and starts PowerShell there. Tot does not execute PC commands in the background. You can also enter the private address, username, and port manually. For a non-default server port, set it in `C:\ProgramData\ssh\sshd_config`, restart `sshd`, enter the same port in Ki, and use **Start SSH now** to refresh the restricted firewall rules. Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/).
-
-In the SSH session, `dir` lists the Projects folder; use `cd <folder>` to enter a project and `cd ..` to go back. The initial Projects location is only a starting directory—the SSH session still has the Windows account's normal file permissions.
-
-To open the full graphical editor on your phone, connect over SSH, then run `code tunnel --accept-server-license-terms --name TotLaptop` from the Projects folder. Complete the GitHub sign-in shown by the command and keep the tunnel running. Copy its printed `vscode.dev/tunnel/...` URL into **Workspace & connections → Remote VS Code** in Tot. Tot validates the URL and opens it in your phone's browser; the editor is not embedded in Tot's chat screen. VS Code Explorer lets you open a project under `Projects`. The tunnel runs as your Windows account and can access any files that account can access. The laptop must stay powered on, awake, and connected to the internet.
-
-Ki's OpenSSH setup disables the broad default Windows SSH firewall rule and allows port 22 only from the local subnet on the Private profile or from Tailscale source addresses. Keep both devices on trusted Wi-Fi or the same Tailscale tailnet, use SSH keys where possible, and never port-forward SSH or Ki's companion port. Tailscale must be signed in and connected on both devices; a running Windows Tailscale service alone does not mean the PC is online. If Tailscale is offline, connect it before using its `100.x.x.x` address. Ki's paired HTTP companion and Windows OpenSSH are separate services.
-
-Ki and Tot can also be dragged toward a screen corner to snap into a compact, tucked-away face. The eyes and mouth remain visible, and dragging the face back toward the middle restores its normal size.
-
-In Tot, **Workspace & connections → Add copied VS Code selection to chat** requests clipboard text from Ki's PC only when tapped. In VS Code, select code and press **Ctrl+C** first; Tot puts that selection in the message draft for you to review before sending. This is intentionally selection-based rather than a background watcher for the active editor.
-
-### Tot photo workflow
-
-1. Attach a photo or screenshot in Tot. The image action card makes the next step explicit.
-2. Choose **Read text** for offline OCR on the phone. Review and edit the recognized text, then send only that text to Ki. This uses the phone, not the laptop vision model.
-3. Choose **Google Lens** to open Android's share sheet and select Lens or another installed image app. Internet access may be needed by Google Lens.
-4. Choose **Ask Ki about image** only when visual understanding is needed. This sends the resized image over your paired local network and runs the optional vision model on the PC; it can be slower and use laptop CPU/RAM.
-
-OCR is bundled with the app and runs on-device without a cloud AI API. The image stays on the phone unless you explicitly choose Lens or ask Ki to analyze the image. Tot shares images through Android's system chooser and does not silently upload them.
-
-The bridge is disabled by default, accepts only authenticated chat/status requests, and stops when Ki exits. The connection currently uses unencrypted HTTP with a random pairing token; use it only on a trusted private network and disable it when finished. The floating Tot overlay is opt-in, remains available over other apps using an Android foreground service, and can be stopped from Tot's notification. After Android app changes, rebuild and reinstall the APK: open `android/` in Android Studio with Android SDK Platform 35 and JDK 17, or run `android\gradlew.bat -p android :app:assembleDebug` from the repository root. The first build downloads Gradle 8.10.2 through the included wrapper.
-
-### Publishing Android updates on GitHub
-
-The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.6` is pushed. It publishes the Android app as `TotCompanion.apk`; the in-app updater looks for this asset on Android releases.
-
-Before the first release, create a long-lived Android signing key and back it up securely. Never commit the keystore or its passwords:
-
-    keytool -genkeypair -v -keystore "$HOME\KiCompanion-release.jks" -storetype JKS -keyalg RSA -keysize 2048 -validity 10000 -alias ki-companion
-
-Add these GitHub repository Actions secrets: `KI_RELEASE_KEYSTORE_BASE64` (the keystore file encoded as one Base64 string), `KI_RELEASE_STORE_PASSWORD`, `KI_RELEASE_KEY_ALIAS`, and `KI_RELEASE_KEY_PASSWORD`. On Windows, copy the Base64 value without writing the key into the repository with:
-
-    [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\KiCompanion-release.jks")) | Set-Clipboard
-
-Then push an Android version tag to start a release:
-
-    git tag android-v0.1.6
-    git push origin android-v0.1.6
-
-The workflow assigns increasing Android `versionCode` values from the tag. Every future APK must be signed with the same keystore; losing it prevents Android from accepting app updates. The APK currently installed by copying the development/debug build is signed with a different key. Install the first GitHub-signed release as a fresh install (uninstalling the debug build removes its app data); after that, in-app updates can install over the app while preserving its data. A private GitHub repository cannot be checked by this public-release updater; do not embed a personal access token in the app.
+- Chat and voice controls that use Ki and Ollama on the paired PC.
+- On-device text recognition for photos, Android sharing to Google Lens, and optional local image analysis through Ki.
+- **Browse Projects in Tot:** browse existing UTF-8 text files under `%USERPROFILE%\Projects`, edit supported files up to 256 KB, review the diff, and explicitly confirm before saving. Tot does not create or delete files.
+- **Termux SSH:** open a Windows terminal on the PC, starting in `%USERPROFILE%\Projects`.
+- **Remote VS Code:** open a VS Code Tunnel in the phone browser.
+- OpenCode session and permission review, plus confirmed Git actions for the repository associated with a selected session.
+- An optional floating buddy and an in-app updater for public GitHub releases.
 
 ## Requirements
 
-- Windows 10 or newer
-- Python 3.10 or newer
-- Ollama for Windows with Qwen3:0.6b (Qwen3:1.7b is optional for harder tasks)
-- Android Studio with Android SDK 35 and JDK 17 to build the optional Android companion
-- Internet access for one-time software and model downloads
-- Windows microphone privacy access enabled for desktop apps when using microphone input
-- PyAudioWPatch, installed with the requirements, for capturing laptop audio through Windows WASAPI loopback
+- Windows 10 or later.
+- Python 3.10 or later.
+- Ollama for Windows and a compatible local model.
+- An internet connection for initial downloads and optional web search.
+- Windows microphone privacy access for microphone input.
+- Android 8.0 or later to install Tot.
+- Android SDK Platform 35 and JDK 17 to build Tot.
 
-## One-time setup
+Ki and Tot can run local AI without a paid AI API. Internet access may still be needed to download software and models, use optional web search, sign in to a VS Code Tunnel, or install updates. Model and software licenses vary.
 
-1. Install Ollama for Windows from https://ollama.com/download/windows
-2. In a terminal, download the fast local chat model:
+## Install and run Ki
 
-       ollama pull qwen3:0.6b
+1. Install [Ollama for Windows](https://ollama.com/download/windows).
+2. Download the default chat model:
 
-   For harder coding or reasoning, optionally install the stronger Qwen3:1.7b model too:
+   ```powershell
+   ollama pull qwen3:0.6b
+   ```
 
-       ollama pull qwen3:1.7b
+   For harder coding or reasoning tasks, optionally install:
 
-   Ki and Tot default to the smaller model for speed. Select the quality model in Ki's **Local model** menu or Tot's Settings when needed; only one Ki/Tot-managed model is kept loaded at a time. Ollama inference runs only while answering, and these defaults cap generation at two CPU threads to reduce sustained laptop load; cooling and temperature still depend on the laptop. When Ki opens, a short animated startup screen waits for Ollama’s local server to respond, then opens Ki’s face. Ki starts Ollama’s server in the background, so you do not need to open Ollama or keep VS Code open. If Ollama does not become ready, the startup screen offers **Try again** or **Open Ki offline**. Ollama remains local at 127.0.0.1:11434.
-   Vision is optional. To enable local image analysis, download the free Moondream model when you want it:
+   ```powershell
+   ollama pull qwen3:1.7b
+   ```
 
-       ollama pull moondream:latest
+   For optional local image analysis, install Moondream when needed:
 
-   The vision model is not downloaded automatically. On an 8 GB laptop, analyze one image at a time and close memory-heavy apps if needed. Ki serializes its own Ollama requests and unloads its previous selected model when changing between Qwen3 and Moondream; changing models can take a while on a CPU.
-3. In VS Code, open this folder and install the app and voice dependencies:
+   ```powershell
+   ollama pull moondream:latest
+   ```
 
-       cd C:/Users/Admin/Desktop/Ki_Companion
-       python -m venv .venv
-       .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   Models are not downloaded automatically. The smaller Qwen model is generally faster on CPU; the larger model may provide better results but needs more time and memory. Ki serializes its managed model requests and limits CPU threads to reduce sustained laptop load.
 
-   The first time you press **Talk** or start ambient listening, Vosk downloads its small English recognition model (about 40 MB). Laptop sound capture uses Windows WASAPI loopback through PyAudioWPatch.
-4. If the microphone is blocked, open Windows Settings, search for **Microphone privacy settings**, and enable access for desktop apps.
+3. Open a PowerShell terminal in the repository and install Ki’s Python dependencies:
 
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
 
-## Open Ki without a terminal
+4. Start Ki by double-clicking `Ki.vbs`, or run it from the repository:
 
-Double-click **Ki.vbs** in this folder to open Ki without a terminal. The **Ki** shortcut on your Desktop uses **Ctrl + Alt + K**. It launches Ki if closed and closes the running Ki instance when pressed again. A glitch-style loading screen appears while Ki starts Ollama’s local server; Ki’s face opens after the server is ready. If Ollama does not start, choose **Try again** or **Open Ki offline**. Ki runs without a terminal and does not require VS Code to stay open. Single-click Ki’s floating face for a playful reaction; double-click it to open chat and controls. Chat and controls share one compact window and topbar; the face remains draggable around the desktop. The panel uses solid charcoal and gray surfaces with clean spacing and simple controls. Resize the panel from its lower-right corner; dashboard tiles reflow into one column when it becomes narrow. The topbar switches between Chat and Control panel, and includes voice settings and panel controls. The control panel groups media playback, device and activity tools, search, and app shortcuts into distinct sections. The battery tile opens the current charge status, and Ki’s face shows a small charging badge when plugged in.
+   ```powershell
+   .\.venv\Scripts\python.exe main.py
+   ```
 
-When Ki finishes starting, its face glitches into view in place, using the same cyan scanline effect as the startup screen. Press **Ctrl + Alt + K** again to quit; Ki glitches out in place. The shortcut still launches Ki when it is not running.
+The first use of voice input downloads and caches an English Vosk model. Enable microphone access for desktop apps in Windows Privacy settings if you use a microphone. Ambient listening is off until you explicitly enable it.
 
-The chat/control panel has a taskbar button while it is open or minimized. Its **X** hides the panel and removes its taskbar button. A single click on Ki’s face only triggers a reaction; double-click to reopen the panel after hiding it. If the panel is minimized, use its taskbar button to restore it—clicking Ki’s face will not unminimize it.
+## Use Tot with Ki
 
-To run it from VS Code instead, use a terminal:
+### Pair the phone
 
-    ./.venv/Scripts/python.exe main.py
+1. Put the PC and phone on the same trusted Wi-Fi network, or connect both to the same private [Tailscale](https://tailscale.com/) network.
+2. In Ki, open **Dashboard → Device & activity → Phone companion** and enable phone access.
+3. In Tot, choose **Scan PC pairing QR** and scan the QR code shown by Ki. You can also enter the private address and pairing token manually.
+4. Tap **Test connection** in Tot.
 
-When Ki starts, it greets you with the current local date and time. To approve or deny an open confirmation, hold **Ctrl + Alt + Space**, say only **approve** or **deny**, and release the keys. If Ki does not recognize either word, the confirmation stays open. Type in the chat as usual. Open the control panel and click **⚙ Voice & sound** to choose an installed Windows voice, preview it, adjust speaking speed, select a microphone, and turn spoken replies on or off. The chat’s **☰** button opens that same settings page. Use the **Quit Ki** button in settings to close Ki completely after confirming. Normal chat replies stream into the chat and Ki begins speaking at sentence breaks; the face animates while the voice is active. Project edit proposals are kept together so Ki can prepare the full review before showing it. In Voice & sound, choose **Microphone**, **Laptop sound**, or **Both**. Press **Talk** for one phrase. To listen continuously, choose a source and click **Start ambient listening** in the settings dialog; use **Stop ambient listening** when finished. Ki places recognized words in the chat box for review and does not send them automatically. Press **Talk**, say a phrase in English, and pause briefly. Or hold **Ctrl + Alt + Space**, wait for the **LISTENING** status, speak, and release either key to send. Ki places the transcription in the message box so you can correct it before pressing **Send**. Ask Ki for today’s date or current time; it reads the laptop’s local clock and time zone directly. Press **Stop** to cancel listening. Use the **☰** menu to turn spoken replies on or off. Audio source, microphone, voice, speed, and spoken-reply preferences are saved between launches. Use **Manage Windows voices** to open Windows speech settings, then **Refresh voice list** in Ki.
+Ki’s phone bridge is disabled by default and binds to private network or Tailscale addresses. The PC must be awake with Ki running for Tot’s chat and in-app project browser to work.
 
-## OpenCode local agent
+### Browse and edit Projects
 
-OpenCode is installed separately from Ki. In this project it defaults to `ollama/qwen3:0.6b` for faster local CPU inference; choose `ollama/qwen3:1.7b` from OpenCode's `/models` menu for stronger coding and tool-use quality when needed. Both configured Ollama models use at most two CPU threads. The project configuration denies every non-Ollama provider, blocks web search/fetch, and asks before reading or editing files, running shell commands, or accessing folders outside this project.
+From Tot, choose **Workspace & connections → Browse Projects in Tot**. Open an existing supported text file, make edits, tap **Review diff**, then choose **Save reviewed diff** only if the changes look right. Tot supports UTF-8 text files up to 256 KB and does not create or delete files.
 
-The dashboard checks the Windows OpenCode launcher even when it is installed through npm and its launcher is not on PATH. The **Connect monitor** button is optional and off by default. When you enable it, Ki installs its OpenCode plugin into your user-level OpenCode plugins folder so it can monitor sessions from other projects too. Restart OpenCode after connecting. The plugin sends session/project names, status, tool labels, pending permission details, and the project folder to Ki over loopback (`127.0.0.1`). The full folder path stays on the PC and is never included in the phone API. Tot polls session activity every eight seconds while its Agents panel is open and refreshes messages when a session finishes, rather than fetching them on every poll. Turn off monitoring with **Disconnect monitor**; Ki removes only its own plugin file.
+The in-app browser uses Ki’s paired phone connection and is limited to `%USERPROFILE%\Projects`. It excludes Git metadata, symbolic links, most hidden files, and unsupported file types. Files changed on the PC since they were opened must be reloaded before saving.
 
-## OpenCode sessions on Tot
+### Open a PC terminal with Termux
 
-Enable both the OpenCode monitor and **Phone companion** on the PC, then pair Tot over trusted Wi-Fi or Tailscale. Tap **Agents** in Tot to see sessions, statuses, recent activity, messages, and pending permission requests. You can send a reply/instruction to a selected session, deny a permission, or approve that one request after reviewing it. Tot never offers remembered/automatic approvals. OpenCode must be running with Ki's plugin loaded to receive phone actions.
+1. Install [Termux](https://f-droid.org/packages/com.termux/).
+2. In Ki’s phone companion dashboard, install Windows **OpenSSH Server** if it is missing, then start the server.
+3. In Tot, choose **Workspace & connections → Termux SSH**. Scan Ki’s separate SSH QR, review the connection details, then choose **Copy command & open Termux**.
+4. Paste and run the copied command in Termux. It connects to the PC and starts PowerShell in `%USERPROFILE%\Projects`.
 
-Tot's **Git for this project** controls operate only on the verified local Git repository associated with the selected OpenCode session; the phone never supplies a filesystem path or shell command. Status and diff are read-only. Stage all, commit staged changes, pull, and push each require a confirmation in Tot. Commit uses only staged changes; pull is fast-forward-only and refuses to run when there are local changes; push uses the branch's configured upstream. Normal Git hooks and credentials configured on the PC still apply.
+The Projects directory is the starting location, **not an SSH sandbox**. SSH runs with your Windows account’s normal file permissions. Keep SSH on a trusted local network or private Tailscale network; never expose it with a router port-forward.
 
-Background permission alerts are optional and off by default. Android checks about every 15 minutes while network is available; battery saving, Tailscale, or the PC being offline can delay delivery. The PC must be on with Ki, the phone bridge, and the OpenCode monitor running. Tapping an alert opens the matching request in Tot for review; it never approves anything automatically. For faster alerts, keep Tot's Agents panel open.
+### Open the full VS Code editor
 
-Agent actions can cause OpenCode to work in the selected project. The project-level OpenCode permissions still apply, and each permission must be reviewed separately. Session messages and permission details are shared with your paired phone only when you open the agent view. The phone connection uses HTTP on trusted Wi-Fi; use Tailscale for encrypted away-from-home access. Never expose the bridge port directly to the public internet.
+VS Code Tunnel provides a graphical editor in the phone browser; it is separate from SSH and from Tot’s in-app editor.
 
-OpenCode's response speed depends mainly on Ollama inference, not Tot's polling. On the tested 8 GB, 4-core i5 laptop, a tiny Qwen3:1.7b prompt did not finish within 90 seconds cold or 45 seconds warm, while a short Qwen3:0.6b local response finished in 7.7 seconds including model startup. OpenCode now defaults to Qwen3:0.6b and limits it to two CPU threads; choose `ollama/qwen3:1.7b` from OpenCode's `/models` list for harder coding tasks. The smaller model is faster, not more capable. Tot's Agents panel polls less often and fetches messages only when a session finishes. CPU limits reduce sustained load but cannot guarantee a particular temperature; Ollama uses CPU only while generating, and laptop cooling depends on its vents, surface, and environment.
+1. Connect to the PC using Termux SSH and start a tunnel:
 
-## Ki Summary and local file analysis
+   ```powershell
+   code tunnel --accept-server-license-terms --name TotLaptop
+   ```
 
-Use **Ki Summary** in the dashboard to see counts and a recent timeline of OpenCode session, tool, approval, and error activity received during the current Ki run. It retains at most 100 event records in memory. Recent session messages are fetched separately only when you open that session in Tot.
+2. Complete the GitHub sign-in if prompted and leave the tunnel running. Copy only the URL beginning with `https://vscode.dev/tunnel/`.
+3. In Tot, open **Workspace & connections → Remote VS Code**, paste the URL, and tap **Open in browser**.
+4. Once connected, use VS Code Explorer to open a project folder on the PC.
 
-Choose **Analyze files with Ki** in the summary window to select TXT, Markdown, JSON, CSV, or SQLite files. Ki prepares a read-only analysis prompt in chat; review it and press **Send** when ready. Analysis uses only the selected files, runs through local Ollama, and does not enable project edit mode. The existing file inspection limits still apply.
+For persistent access, VS Code documents `code tunnel service install`; the PC must still be powered on, awake, and online. VS Code Tunnel runs with your Windows account’s permissions and can access files beyond `Projects`. The first connection may require signing in to the same GitHub or Microsoft account authorized for the tunnel.
 
-## Attach files
+### Use the local OpenCode agent
 
-Use the **+** button in chat to select TXT, Markdown, JSON, CSV, SQLite, or one PNG, JPG, WEBP, or BMP image. Ki reads only the files you select, locally, when you send the message. Text excerpts are limited to 8,000 characters; CSV inspection is limited to 10,000 rows and includes basic numeric summaries; SQLite is opened read-only and provides table/column names, up to five sample rows, and numeric summaries from at most 2,000 rows per table. Images are limited to one per request, resized to at most 1,280 pixels per side, and analyzed by Moondream through Ollama at 127.0.0.1. If **Web** is also on, Ki searches using your question and a short local image description; it does not send the image to the search provider. Image analysis can be slow on CPU-only laptops. Attachment contents are not uploaded to a cloud AI service.
+OpenCode is installed separately from Ki. This project’s `opencode.json` defaults to `ollama/qwen3:0.6b`; choose `ollama/qwen3:1.7b` from OpenCode’s `/models` menu for more demanding coding tasks. The project configuration restricts providers to local Ollama, blocks web search, and requires approval for file access, edits, shell commands, or folders outside the project.
 
-To share VS Code context, copy the code, error, or Problems text you want Ki to see, then click **Code** in the chat composer. Ki reads only that copied text after you click; the button does not monitor the editor or clipboard. It includes up to 12,000 characters in the next request. Clear it with **×** before sending if it is not needed.
+To view sessions in Tot, enable Ki’s **OpenCode monitor** in the dashboard and restart OpenCode so its plugin loads. Monitoring is optional and off by default. Ki keeps the project’s full path on the PC; Tot sees session and project labels, activity, messages, and pending permission requests.
 
-## Project mode
+### OpenCode sessions and Git on Tot
 
-1. In chat, click **Project** and choose the folder Ki may work in. It opens at C:\Users\Admin\Desktop\Ki_Companion by default.
-2. Use **Files** to pick individual files, or **Review folder** to let Ki find up to 10 supported text/code files in that folder for the next chat request. Folder review skips common generated/dependency folders and credential-style filenames. Ki reads the selected content locally when you send a message; the project label lists the chosen files when you hover over it.
-3. Ask Ki to review or explain the project in chat. To request edits, turn on **Edit mode**, describe one small change, and press **Send**.
-4. Review the complete diff. Click **Approve and save** or **Deny**; voice approval also works with **Ctrl + Alt + Space** and the words “approve” or “deny.” Nothing is written before approval.
+On the PC, enable Ki’s **OpenCode monitor** and **Phone companion**, then pair Tot over trusted Wi-Fi or Tailscale. Open **Agents** in Tot to view sessions and messages, respond to a session, and review pending permission requests. A permission can be allowed once or denied; Tot does not remember or automatically grant approvals.
 
-Ki can edit only selected, fully supplied text files or create a new supported text file inside the chosen folder. Existing files are backed up under .ki-backups; new subfolders are not created. Ki does not delete files, run commands, or edit outside the selected project. Project context is limited to 10 files, 256 KB per file, and 12,000 characters total per request; large files are supplied as read-only excerpts. Folder review bounds its scan to 3,000 files and 500 directories, and skips dependency, cache, build, and backup folders.
+Tot’s Git controls are limited to the verified repository associated with the selected OpenCode session. Status and diff are read-only. Stage, commit, pull, and push require confirmation. Commits use staged changes; pull is fast-forward-only and refuses to run when there are local changes; push uses the configured upstream.
 
-## Files
+Optional background permission alerts are off by default. Android checks periodically when network access is available; battery restrictions, an offline PC, or disconnected Tailscale can delay notifications. Tapping an alert opens the request for review and does not approve it.
 
-- ki/git_operations.py -- fixed, repository-scoped Git actions for Tot
+OpenCode response speed depends mainly on local Ollama inference and the selected model. Qwen3:0.6b is the faster default; Qwen3:1.7b may handle harder tasks better but is slower on modest CPUs. Tot reduces polling while the Agents panel is closed. CPU thread limits help reduce sustained load but cannot guarantee a laptop temperature.
 
-- main.py — compatibility entry point used by Ki.vbs
-- ki/shared.py — shared imports, icons, app paths, and helper functions
-- ki/services.py — voice workers, local Ollama, web search, and OpenCode monitor
-- ki/phone_bridge.py — opt-in, token-protected local Android chat bridge
-- ki/chat.py — chat window and conversation flow
-- ki/dashboard.py — dashboard, settings, Git, and activity dialogs
-- ki/panel.py — combined chat/control panel window
-- ki/robot.py — floating companion, animation, drag-and-drop, and hotkeys
-- ki/startup.py — startup splash and startup flow
-- ki/app.py — Qt application setup and single-instance launcher
-- requirements.txt — PySide6, sounddevice, Vosk, and pyttsx3
-- Ki.vbs — opens Ki without showing a terminal
-- android/ — native Android companion app project
-- .gitignore — ignores Python cache and local virtual environments
+## Privacy and security
+
+- Chat and local model inference use Ollama on the PC; Ki does not call a cloud AI API for chat.
+- Optional web search sends your search query to the search provider.
+- Photos stay on the phone unless you choose Google Lens or explicitly ask Ki to analyze an image. Local image analysis sends the selected image to Ollama on your PC.
+- Ki reads VS Code clipboard text only after you press **Code**. Tot’s copied-selection action is also explicit.
+- Project edits require diff review and approval. Ki does not delete project files or run arbitrary terminal commands.
+- The phone bridge uses token-authenticated HTTP, which is not encrypted by itself. Use it only on a trusted private network; use Tailscale for encrypted access away from home. Do not port-forward the bridge port or expose it to the public internet.
+- OpenSSH and VS Code Tunnel are separate services and follow the Windows account’s permissions. Protect your Windows and GitHub/Microsoft accounts and stop services you no longer need.
+
+## Build and test
+
+### Windows app
+
+Install the requirements as described above, then run:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+### Android app
+
+With JDK 17 and Android SDK Platform 35 installed, build the debug APK from the repository root:
+
+```powershell
+.\android\gradlew.bat --no-daemon -p android :app:assembleDebug
+```
+
+The APK is written to `android\app\build\outputs\apk\debug\app-debug.apk`. Android Studio can also open the `android` directory as a project.
+
+## Publish an Android release
+
+The [Android release workflow](.github/workflows/android-release.yml) builds and publishes a signed `TotCompanion.apk` when a version tag matching `android-v*` is pushed. The workflow requires these GitHub Actions repository secrets:
+
+- `KI_RELEASE_KEYSTORE_BASE64`
+- `KI_RELEASE_STORE_PASSWORD`
+- `KI_RELEASE_KEY_ALIAS`
+- `KI_RELEASE_KEY_PASSWORD`
+
+The signing keystore must remain private and must be backed up securely. Do not commit the keystore or passwords. Android accepts an in-place app update only when it is signed with the same key as the installed release. A debug-signed APK has a different signing key and cannot be updated directly by the GitHub-signed release.
+
+After preparing a new version and confirming the signing secrets are configured, create and push a new tag:
+
+```powershell
+git tag android-v0.1.15
+git push origin android-v0.1.15
+```
+
+This is an example; replace it with the next unused version tag. GitHub Actions builds the release APK and publishes it to the matching GitHub Release.
+
+## Repository layout
+
+```text
+.
+├── .github/workflows/       # Android release automation
+├── .opencode/plugins/       # OpenCode integration plugins
+├── android/                 # Native Android companion (Tot)
+├── ki/                      # Windows desktop app and services
+├── tests/                   # Python unit tests
+├── Ki.vbs                   # Launch Ki without a terminal
+├── main.py                  # Windows application entry point
+├── opencode.json            # Project-local OpenCode settings
+└── requirements.txt         # Python dependencies
+```
+
+Generated build output, Python virtual environments, caches, downloaded models, local configuration, and signing keys are excluded from Git.
