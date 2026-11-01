@@ -3,18 +3,26 @@ package com.ki.companion
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Xml
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Proxy
+import java.net.URI
+import java.net.URISyntaxException
 import java.net.URL
 
 private const val GITHUB_RELEASES_URL =
     "https://api.github.com/repos/gitieeetot/Ki_Companion/releases?per_page=20"
+private const val GITHUB_RELEASES_FEED_URL =
+    "https://github.com/gitieeetot/Ki_Companion/releases.atom"
+private const val GITHUB_RELEASE_DOWNLOAD_BASE =
+    "https://github.com/gitieeetot/Ki_Companion/releases/download/"
 private const val UPDATE_APK_NAME = "KiCompanion.apk"
 private const val MAX_UPDATE_SIZE = 100L * 1024 * 1024
 private val RELEASE_VERSION_CODE_REGEX = Regex("""Ki-Companion-Version-Code:\s*(\d+)""", RegexOption.IGNORE_CASE)
@@ -35,6 +43,9 @@ fun checkForAppUpdate(): UpdateCheckResult {
     val connection = openGitHubConnection(GITHUB_RELEASES_URL)
     try {
         val status = connection.responseCode
+        if (status == 403 || status == 429) {
+            return checkForAppUpdateFromFeed()
+        }
         if (status !in 200..299) {
             throw IOException(githubErrorMessage(status))
         }
@@ -69,6 +80,90 @@ fun checkForAppUpdate(): UpdateCheckResult {
     } finally {
         connection.disconnect()
     }
+}
+
+private fun checkForAppUpdateFromFeed(): UpdateCheckResult {
+    val connection = openGitHubConnection(GITHUB_RELEASES_FEED_URL)
+    try {
+        val status = connection.responseCode
+        if (status !in 200..299) throw IOException(githubErrorMessage(status))
+        val parser = Xml.newPullParser()
+        parser.setInput(connection.inputStream, Charsets.UTF_8.name())
+        var event = parser.eventType
+        var inEntry = false
+        var inContent = false
+        var releaseLink: String? = null
+        val releaseContent = StringBuilder()
+        while (event != XmlPullParser.END_DOCUMENT) {
+            when (event) {
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "entry" -> {
+                        inEntry = true
+                        releaseLink = null
+                        releaseContent.setLength(0)
+                    }
+                    "link" -> if (
+                        inEntry &&
+                        (parser.getAttributeValue(null, "rel") == null ||
+                            parser.getAttributeValue(null, "rel") == "alternate")
+                    ) {
+                        releaseLink = parser.getAttributeValue(null, "href")
+                    }
+                    "content" -> if (inEntry) inContent = true
+                }
+                XmlPullParser.TEXT -> if (inEntry && inContent) {
+                    releaseContent.append(parser.text)
+                }
+                XmlPullParser.END_TAG -> when (parser.name) {
+                    "content" -> inContent = false
+                    "entry" -> {
+                        inEntry = false
+                        val tag = releaseTagFromFeedLink(releaseLink) ?: continue
+                        val version = tag.removePrefix("android-v")
+                        if (!isReleaseNewer(version, releaseContent.toString())) continue
+                        return UpdateCheckResult.Available(
+                            AppUpdate(
+                                versionName = version,
+                                versionCode = RELEASE_VERSION_CODE_REGEX.find(releaseContent)
+                                    ?.groupValues?.get(1)?.toLongOrNull(),
+                                downloadUrl = "$GITHUB_RELEASE_DOWNLOAD_BASE$tag/$UPDATE_APK_NAME",
+                                notes = releaseContent.toString()
+                                    .replace(Regex("<[^>]*>"), " ")
+                                    .replace(Regex("\\s+"), " ")
+                                    .trim()
+                                    .take(4_000),
+                            ),
+                        )
+                    }
+                }
+            }
+            event = parser.next()
+        }
+        return UpdateCheckResult.UpToDate
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private fun releaseTagFromFeedLink(link: String?): String? {
+    if (link == null) return null
+    val uri = try {
+        URI(link)
+    } catch (_: URISyntaxException) {
+        return null
+    }
+    if (uri.scheme != "https" || uri.host != "github.com" ||
+        uri.rawQuery != null || uri.rawFragment != null
+    ) return null
+    val match = Regex("^/gitieeetot/Ki_Companion/releases/tag/(android-v\\d+\\.\\d+\\.\\d+)$")
+        .matchEntire(uri.path) ?: return null
+    return match.groupValues[1]
+}
+
+private fun isReleaseNewer(version: String, notes: String): Boolean {
+    if (isNewerVersion(version, BuildConfig.VERSION_NAME)) return true
+    val versionCode = RELEASE_VERSION_CODE_REGEX.find(notes)?.groupValues?.get(1)?.toLongOrNull()
+    return versionCode != null && versionCode > BuildConfig.VERSION_CODE
 }
 
 private fun findApkAsset(assets: JSONArray): JSONObject? {
