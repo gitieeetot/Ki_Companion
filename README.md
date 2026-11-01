@@ -1,13 +1,32 @@
-# Ki&Tot
+# Ki & Tot
 
-Ki&Tot is one companion with two distinct identities: **Ki** is the Windows assistant, and **Tot** is the expressive Android companion. Tot brings Ki's local PC chat and approved PC features to the phone without pretending to be Ki or controlling the PC on its own.
+**A local-first AI companion for Windows, with an Android companion for working on the go.**
 
-### Who's who
+[![Latest Android release](https://img.shields.io/github/v/release/gitieeetot/Ki_Companion?display_name=tag&label=Android%20release)](https://github.com/gitieeetot/Ki_Companion/releases/latest)
+[![Android release workflow](https://github.com/gitieeetot/Ki_Companion/actions/workflows/android-release.yml/badge.svg)](https://github.com/gitieeetot/Ki_Companion/actions/workflows/android-release.yml)
 
-- **Ki (Windows):** the local-first laptop assistant. Ki runs the selected Ollama models and Windows/VS Code integrations on the PC, with actions gated by the desktop UI and user approvals.
-- **Tot (Android):** Ki's playful phone-side companion. Tot handles the mobile chat, voice, image, SSH/Termux shortcuts, and floating animated buddy, then connects to Ki over the explicitly paired private network. Tot does not run PC commands autonomously.
+**[Download the latest Tot APK](https://github.com/gitieeetot/Ki_Companion/releases/latest/download/TotCompanion.apk)** · [Browse releases](https://github.com/gitieeetot/Ki_Companion/releases)
 
-## What Ki can do now
+Ki & Tot pairs a Windows desktop assistant with a native Android companion. Local Ollama models handle chat on your PC; Tot connects over a private, explicitly paired network. Actions that can affect your PC require your review and approval.
+
+## Overview
+
+- **Ki (Windows):** local AI chat, optional image analysis and web search, voice input, VS Code context, and reviewed project edits.
+- **Tot (Android):** mobile chat and voice, photo workflows, SSH/Termux shortcuts, and a compact animated floating companion.
+- **Private by design:** local AI runs through Ollama on your PC. Phone access is opt-in, authenticated, and intended for a trusted network or Tailscale.
+
+## Contents
+
+- [Features](#features)
+- [Tot for Android](#tot-for-android)
+- [Requirements](#requirements)
+- [One-time setup](#one-time-setup)
+- [Open Ki without a terminal](#open-ki-without-a-terminal)
+- [OpenCode local agent](#opencode-local-agent)
+- [OpenCode sessions on Tot](#opencode-sessions-on-tot)
+- [Publishing Android updates](#publishing-android-updates-on-github)
+
+## Features
 
 - Chat with Qwen3:0.6b by default through Ollama running on this computer. Choose Qwen3:1.7b in Ki or Tot for harder coding and reasoning tasks; Ki unloads the other managed model when switching.
 - Select one screenshot or photo for local analysis with the optional Moondream vision model. Ki resizes images before sending them to Ollama, can read legible screenshot text, and unloads the last Ki-selected model before switching between chat and vision so Ki does not intentionally keep both models loaded.
@@ -27,7 +46,16 @@ Wake-word and clap detection are not implemented. Ambient listening is an explic
 
 ## Tot for Android
 
-The native Android app is Tot (Android 8.0 or newer); Ki remains the Windows buddy and answers chats on the PC. Tot has a glass-card chat UI in Ki's charcoal-and-cyan colors, a matching animated display face with visible hands and feet that sway while Tot speaks and dance during happy reactions, a Home-screen **Wake Tot** action for quickly showing or hiding the floating buddy, microphone readiness feedback, and voice messages that auto-send with **Edit**, **Retry**, and **Delete** actions on their chat bubbles. Editing sends a correction as a new message; deleting removes the bubble from Tot only and cannot retract a prompt already sent to the PC. In Settings, **Local chat model** lists installed Ollama text models up to 3B parameters and 3 GB on Ki's PC; Tot does not download models automatically, and Ki unloads other managed models when switching. These are local Ollama model files, not paid cloud APIs; model licenses differ. To install a small model, run (for example) `ollama pull qwen3:0.6b` or `ollama pull qwen3:1.7b` on the PC, then tap **Refresh** in Tot. The default is Qwen3:0.6b; choose Qwen3:1.7b for harder work. Tot also has QR and manual PC pairing, saved connection details, connection checks, UTF-8 text attachments up to 512 KB, and an **Updates** screen that checks GitHub Releases, downloads the APK, verifies its package/version, and hands installation to Android for your confirmation. Attachments selected in Tot are sent to Ki only when you send the message. For VS Code, copy a selection on the PC, tap **VS Code** in Tot, review the added draft, and send it yourself; Ki reads the clipboard only after this explicit request. This shares the copied text, not the whole active file. For a selected image, **Read text** uses the bundled, on-device ML Kit OCR on the phone; review or edit the result, then send only that text to Ki's chat model. This does not run the laptop vision model or send the image over the network. **Google Lens** opens Android's share chooser with the image; choose Lens if installed (internet and Google services may be needed). **Ask Ki about image** explicitly sends the resized image to the PC and uses its optional Ollama vision model. Tap **Wake Tot** on Home to let Tot leave the chat and float over other apps. Android will ask you to allow **Display over other apps**; while enabled, Android keeps Tot available with a foreground service. If notifications are allowed, Tot's persistent notification offers a shortcut back to the app and a **Hide Tot** action. Drag Tot anywhere on screen and tap him to open Tot chat; his eyes, mouth, and status ring animate with his activity. The overlay can always be turned off from Home. Android settings also provide speech input and reply output options (phone, Windows PC, both, or text only). Tot's speech recognizer is supplied by Android; it may send audio to the provider's servers, depending on your selected provider and settings, so check that provider's privacy policy. Phone speech uses Android text-to-speech. Windows speech uses Ki's selected local Windows voice. Update checks use public GitHub release data; the repository and Android releases must be public. Tot does not expose unrestricted PC command execution or save uploaded files on the PC.
+Tot is the native Android companion (Android 8.0 or newer); Ki remains on Windows and answers chats on the PC.
+
+- **Chat and voice:** charcoal-and-cyan chat UI, voice input and replies, microphone readiness feedback, and editable voice messages with **Edit**, **Retry**, and **Delete** actions.
+- **Animated buddy:** a compact display face with expressive eyes, mouth, and status ring, without arms or legs. Use **Wake Tot** on Home to show or hide the floating overlay.
+- **Local AI:** choose an installed Ollama model on Ki's PC. Qwen3:0.6b is the default; Qwen3:1.7b is available for harder tasks. Tot does not download models automatically. On the PC, run `ollama pull qwen3:0.6b` or `ollama pull qwen3:1.7b`, then tap **Refresh** in Tot. Model licenses vary.
+- **PC pairing:** pair by QR code or enter connection details manually. Attachments are sent only when you send a message. The **VS Code** action requests copied text from Ki's PC after you explicitly tap it; review the draft before sending.
+- **Photos:** **Read text** runs on-device OCR; **Google Lens** opens Android's share chooser; **Ask Ki about image** sends the selected, resized image to Ki's PC for local Ollama analysis.
+- **Updates:** check public GitHub Releases, download the verified APK, and hand off installation to Android for your confirmation.
+
+Tot does not run PC commands autonomously. Android speech recognition may send audio to its provider, depending on your selected provider and settings; check that provider's privacy policy. Update checks require a public repository and public releases.
 
 To pair, put both devices on the same trusted Wi-Fi/hotspot, or install Tailscale on both and sign in to the same private tailnet. In Ki, open Dashboard → Device & activity → Phone companion and enable phone access. In the Android app tap **Scan PC pairing QR**, then point the camera at the QR code in Ki's PC dialog. You can also enter the private address and token manually. If Windows asks about the firewall, allow Python on private networks only. USB file-transfer/MTP mode by itself is not a network connection. Ki binds only to private local addresses and a detected Tailscale interface; do not port-forward Ki's port or expose it to the public internet. The QR includes the local pairing token, so display and scan it only on a trusted network.
 
