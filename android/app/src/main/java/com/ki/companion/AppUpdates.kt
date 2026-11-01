@@ -17,9 +17,11 @@ private const val GITHUB_RELEASES_URL =
     "https://api.github.com/repos/gitieeetot/Ki_Companion/releases?per_page=20"
 private const val UPDATE_APK_NAME = "KiCompanion.apk"
 private const val MAX_UPDATE_SIZE = 100L * 1024 * 1024
+private val RELEASE_VERSION_CODE_REGEX = Regex("""Ki-Companion-Version-Code:\s*(\d+)""", RegexOption.IGNORE_CASE)
 
 data class AppUpdate(
     val versionName: String,
+    val versionCode: Long?,
     val downloadUrl: String,
     val notes: String,
 )
@@ -45,15 +47,20 @@ fun checkForAppUpdate(): UpdateCheckResult {
             if (!tag.startsWith("android-v")) continue
             foundAndroidRelease = true
             val version = tag.removePrefix("android-v")
-            if (!isNewerVersion(version, BuildConfig.VERSION_NAME)) continue
+            val notes = release.optString("body")
+            val versionCode = RELEASE_VERSION_CODE_REGEX.find(notes)?.groupValues?.get(1)?.toLongOrNull()
+            val hasNewerVersion = isNewerVersion(version, BuildConfig.VERSION_NAME)
+            val hasNewerBuild = versionCode != null && versionCode > BuildConfig.VERSION_CODE
+            if (!hasNewerVersion && !hasNewerBuild) continue
             val assets = release.optJSONArray("assets") ?: continue
             val apk = findApkAsset(assets)
                 ?: throw IOException("GitHub release $tag is missing its KiCompanion.apk file.")
             return UpdateCheckResult.Available(
                 AppUpdate(
                     versionName = version,
+                    versionCode = versionCode,
                     downloadUrl = apk.optString("browser_download_url"),
-                    notes = release.optString("body").take(4_000),
+                    notes = notes.take(4_000),
                 ),
             )
         }
@@ -162,6 +169,9 @@ private fun verifyDownloadedUpdate(context: Context, apkFile: File, update: AppU
     }
     if (archiveVersionCode <= currentVersionCode(context)) {
         throw IOException("The downloaded APK is not newer than this installed version.")
+    }
+    if (update.versionCode != null && archiveVersionCode != update.versionCode) {
+        throw IOException("The APK build number does not match its GitHub release.")
     }
     if (archiveInfo.versionName != update.versionName) {
         throw IOException("The APK version does not match its GitHub release.")
