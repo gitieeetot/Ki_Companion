@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -568,26 +569,41 @@ private fun KiCompanionScreen(context: Context) {
         }
     }
 
+    fun updateFloatingTot(enabled: Boolean) {
+        if (!enabled) {
+            TotOverlayService.stop(context)
+            floatingTot.value = false
+            preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+            status.value = "Tot is resting. Wake him again from Home whenever you like."
+            statusIsError.value = false
+            return
+        }
+        try {
+            TotOverlayService.start(context)
+            floatingTot.value = true
+            preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, true).apply()
+            status.value = "Tot is awake. Drag him anywhere and tap for a hello."
+            statusIsError.value = false
+        } catch (error: IllegalStateException) {
+            floatingTot.value = false
+            status.value = error.message ?: "Android couldn't start Tot's floating buddy."
+            statusIsError.value = true
+        } catch (error: SecurityException) {
+            floatingTot.value = false
+            status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
+            statusIsError.value = true
+        }
+    }
+
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
         overlayPermission.value = Settings.canDrawOverlays(context)
         if (overlayPermission.value) {
-            try {
-                TotOverlayService.start(context)
-                floatingTot.value = true
-                preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, true).apply()
-                status.value = "Tot is floating. Drag him anywhere and tap for a hello."
-                statusIsError.value = false
-            } catch (error: IllegalStateException) {
-                floatingTot.value = false
-                status.value = error.message ?: "Android couldn't start Tot's floating buddy."
-                statusIsError.value = true
-            } catch (error: SecurityException) {
-                floatingTot.value = false
-                status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
-                statusIsError.value = true
-            }
+            updateFloatingTot(true)
+        } else {
+            status.value = "Allow display over other apps to wake Tot above your other apps."
+            statusIsError.value = true
         }
     }
 
@@ -659,11 +675,15 @@ private fun KiCompanionScreen(context: Context) {
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
-                Text("Tot", color = KiText, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+            TotMark(Modifier.size(42.dp))
+            Column(
+                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text("Tot", color = KiText, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("YOUR POCKET COMPANION", color = KiMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             }
             TextButton(
                 enabled = !busy.value && !agentBusy.value,
@@ -676,13 +696,31 @@ private fun KiCompanionScreen(context: Context) {
             }
         }
 
+        TotWakeCard(
+            isAwake = floatingTot.value,
+            canDisplayOverApps = overlayPermission.value,
+            onClick = {
+                if (floatingTot.value) {
+                    updateFloatingTot(false)
+                } else if (Settings.canDrawOverlays(context)) {
+                    updateFloatingTot(true)
+                } else {
+                    overlayPermissionLauncher.launch(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                }
+            },
+        )
+
         ConnectionStatusCard(
             status = status.value,
             isError = statusIsError.value,
             isThinking = busy.value,
             onClick = {
-                status.value = if (busy.value) "Ki is thinking about your message…" else "Tot is here with you."
-                statusIsError.value = false
+                showSettings.value = true
             },
         )
 
@@ -766,11 +804,11 @@ private fun KiCompanionScreen(context: Context) {
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF3A6975),
-                                contentColor = KiText,
+                                containerColor = KiAccent,
+                                contentColor = Color(0xFF101417),
                             ),
                         ) {
-                            Text("Ask Ki about image · uses PC")
+                            Text("Ask Ki about image · uses PC", fontWeight = FontWeight.SemiBold)
                         }
                         Text(
                             "Read text stays on this phone. Sending the image to Ki uses your PC’s vision model.",
@@ -981,6 +1019,14 @@ private fun KiCompanionScreen(context: Context) {
                             colors = CardDefaults.cardColors(
                                 containerColor = if (selectedAgent.value?.id == session.id) KiSurfaceRaised else KiBackground,
                             ),
+                            border = BorderStroke(
+                                1.dp,
+                                if (selectedAgent.value?.id == session.id) {
+                                    KiAccent.copy(alpha = 0.35f)
+                                } else {
+                                    Color.White.copy(alpha = 0.06f)
+                                },
+                            ),
                         ) {
                             Column(Modifier.padding(10.dp)) {
                                 Text(session.title.ifBlank { "OpenCode session" }, color = KiText, fontWeight = FontWeight.SemiBold)
@@ -997,18 +1043,29 @@ private fun KiCompanionScreen(context: Context) {
                         val sessionEvents = agentEvents.filter { it.sessionId == selected.id }.takeLast(8).reversed()
                         if (sessionEvents.isNotEmpty()) {
                             Text("Recent activity", color = KiText, fontWeight = FontWeight.SemiBold)
-                            sessionEvents.forEach { event ->
-                                val activity = when (event.type) {
-                                    "session.created" -> "Session started"
-                                    "session.idle" -> "Agent is waiting"
-                                    "session.error" -> "Session error"
-                                    "permission.asked" -> "Permission requested: ${event.permissionTitle}"
-                                    "permission.replied" -> "Permission answered"
-                                    "tool.execute.before" -> "Started ${event.tool.ifBlank { "a tool" }}"
-                                    "tool.execute.after" -> "Finished ${event.tool.ifBlank { "a tool" }}"
-                                    else -> event.type.replace('.', ' ')
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = KiBackground),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.06f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(11.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                                ) {
+                                    sessionEvents.forEach { event ->
+                                        val activity = when (event.type) {
+                                            "session.created" -> "Session started"
+                                            "session.idle" -> "Agent is waiting"
+                                            "session.error" -> "Session error"
+                                            "permission.asked" -> "Permission requested: ${event.permissionTitle}"
+                                            "permission.replied" -> "Permission answered"
+                                            "tool.execute.before" -> "Started ${event.tool.ifBlank { "a tool" }}"
+                                            "tool.execute.after" -> "Finished ${event.tool.ifBlank { "a tool" }}"
+                                            else -> event.type.replace('.', ' ')
+                                        }
+                                        Text(activity, color = KiMuted, fontSize = 10.sp)
+                                    }
                                 }
-                                Text(activity, color = KiMuted, fontSize = 10.sp)
                             }
                         }
                         Text("Latest messages", color = KiText, fontWeight = FontWeight.SemiBold)
@@ -1016,11 +1073,35 @@ private fun KiCompanionScreen(context: Context) {
                             Text("Tap Refresh to read this session's recent messages.", color = KiMuted, fontSize = 11.sp)
                         }
                         agentMessages.takeLast(8).forEach { message ->
-                            Text(
-                                "${if (message.role == "assistant") "Agent" else "You"}: ${message.content}",
-                                color = if (message.role == "assistant") KiText else KiMuted,
-                                fontSize = 11.sp,
-                            )
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (message.role == "assistant") KiSurfaceRaised else KiBackground,
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (message.role == "assistant") {
+                                        KiAccent.copy(alpha = 0.12f)
+                                    } else {
+                                        Color.White.copy(alpha = 0.05f)
+                                    },
+                                ),
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        if (message.role == "assistant") "AGENT" else "YOU",
+                                        color = if (message.role == "assistant") KiAccent else KiMuted,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.sp,
+                                    )
+                                    Text(message.content, color = KiText, fontSize = 11.sp)
+                                }
+                            }
                         }
                         val pending = agentPermissions.filter { it.sessionId == selected.id }
                         if (pending.isNotEmpty()) {
@@ -1028,7 +1109,8 @@ private fun KiCompanionScreen(context: Context) {
                             pending.forEach { permission ->
                                 Card(
                                     shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF3A3030)),
+                                    colors = CardDefaults.cardColors(containerColor = KiSurfaceRaised),
+                                    border = BorderStroke(1.dp, KiError.copy(alpha = 0.3f)),
                                 ) {
                                     Column(
                                         Modifier.fillMaxWidth().padding(10.dp),
@@ -1220,25 +1302,9 @@ private fun KiCompanionScreen(context: Context) {
                             checked = floatingTot.value,
                             onCheckedChange = { enabled ->
                                 if (!enabled) {
-                                    TotOverlayService.stop(context)
-                                    floatingTot.value = false
-                                    preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, false).apply()
+                                    updateFloatingTot(false)
                                 } else if (Settings.canDrawOverlays(context)) {
-                                    try {
-                                        TotOverlayService.start(context)
-                                        floatingTot.value = true
-                                        preferences.edit().putBoolean(TotOverlayService.KEY_ENABLED, true).apply()
-                                        status.value = "Tot is floating. Drag him anywhere and tap for a hello."
-                                        statusIsError.value = false
-                                    } catch (error: IllegalStateException) {
-                                        floatingTot.value = false
-                                        status.value = error.message ?: "Android couldn't start Tot's floating buddy."
-                                        statusIsError.value = true
-                                    } catch (error: SecurityException) {
-                                        floatingTot.value = false
-                                        status.value = "Android blocked Tot's floating buddy. Check overlay permission and try again."
-                                        statusIsError.value = true
-                                    }
+                                    updateFloatingTot(true)
                                 } else {
                                     overlayPermissionLauncher.launch(
                                         Intent(
@@ -1248,6 +1314,11 @@ private fun KiCompanionScreen(context: Context) {
                                     )
                                 }
                             },
+                        )
+                        Text(
+                            "You can also wake Tot from the Home screen.",
+                            color = KiMuted,
+                            fontSize = 11.sp,
                         )
                     }
                     Text("VOICE INPUT", color = KiAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
@@ -1442,27 +1513,102 @@ private fun openUpdateInstaller(context: Context, apk: java.io.File, onError: (S
 }
 
 @Composable
+private fun TotMark(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(KiAccent.copy(alpha = 0.13f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("•ᴗ•", color = KiAccent, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun TotWakeCard(
+    isAwake: Boolean,
+    canDisplayOverApps: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = KiSurface),
+        border = BorderStroke(1.dp, KiAccent.copy(alpha = if (isAwake) 0.3f else 0.12f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(13.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TotMark(Modifier.size(48.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    if (isAwake) "Tot is with you" else "Tot is taking a nap",
+                    color = KiText,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    when {
+                        isAwake -> "Floating above your apps · tap to tuck him away"
+                        canDisplayOverApps -> "Bring your little buddy over other apps"
+                        else -> "Allow overlay access to wake Tot over other apps"
+                    },
+                    color = KiMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                )
+            }
+            Button(
+                onClick = onClick,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isAwake) KiSurfaceRaised else KiAccent,
+                    contentColor = if (isAwake) KiText else Color(0xFF101417),
+                ),
+            ) {
+                Text(
+                    if (isAwake) "Let rest" else "Wake Tot",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectionStatusCard(status: String, isError: Boolean, isThinking: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = KiSurface),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("KI ON YOUR WINDOWS PC", color = KiAccent, fontSize = 10.sp, letterSpacing = 1.3.sp, fontWeight = FontWeight.Bold)
-            Text(
-                status,
-                color = if (isError) KiError else KiText,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 2,
+            Box(
+                modifier = Modifier.size(8.dp).clip(CircleShape)
+                    .background(if (isError) KiError else KiAccent),
             )
-            if (isThinking) Text("Ki is thinking…", color = KiMuted, fontSize = 11.sp)
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("KI · WINDOWS PC", color = KiAccent, fontSize = 9.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (isThinking) "Ki is thinking…" else status,
+                    color = if (isError) KiError else KiText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                )
+            }
         }
     }
 }
@@ -1500,8 +1646,8 @@ private fun ConnectionCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(13.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF3A6975),
-                    contentColor = KiText,
+                    containerColor = KiAccent,
+                    contentColor = Color(0xFF101417),
                 ),
             ) {
                 Text("Scan PC pairing QR")
@@ -1549,18 +1695,19 @@ private fun EmptyChatCard(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(24.dp))
             .background(KiSurface)
             .padding(20.dp),
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        TotMark(Modifier.size(62.dp))
         Text("A little company, wherever you go.", color = KiText, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(7.dp))
         Text(
             "Connect to Ki on your PC, then send a message to start chatting.",
             color = KiMuted,
             fontSize = 13.sp,
+            lineHeight = 19.sp,
         )
     }
 }

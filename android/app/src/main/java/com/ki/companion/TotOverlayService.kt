@@ -186,10 +186,10 @@ class TotOverlayService : Service() {
 private class TotBuddyView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private val handler = Handler(Looper.getMainLooper())
-    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF49445C.toInt() }
-    private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD8CFFF.toInt() }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33C6A9FF }
-    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF292536.toInt() }
+    private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF2A3036.toInt() }
+    private val facePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB9F2FF.toInt() }
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x338FE8FF }
+    private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF17191C.toInt() }
     private val bubblePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xF2262930.toInt() }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFF2F4F6.toInt()
@@ -198,7 +198,7 @@ private class TotBuddyView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
     private val mouthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF292536.toInt()
+        color = 0xFF17191C.toInt()
         style = Paint.Style.STROKE
         strokeWidth = 1.5f * density
     }
