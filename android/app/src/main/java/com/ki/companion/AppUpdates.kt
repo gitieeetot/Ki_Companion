@@ -23,7 +23,7 @@ private const val GITHUB_RELEASES_FEED_URL =
     "https://github.com/gitieeetot/Ki_Companion/releases.atom"
 private const val GITHUB_RELEASE_DOWNLOAD_BASE =
     "https://github.com/gitieeetot/Ki_Companion/releases/download/"
-private const val UPDATE_APK_NAME = "KiCompanion.apk"
+private const val UPDATE_APK_NAME = "TotCompanion.apk"
 private const val MAX_UPDATE_SIZE = 100L * 1024 * 1024
 private val RELEASE_VERSION_CODE_REGEX = Regex("""Ki-Companion-Version-Code:\s*(\d+)""", RegexOption.IGNORE_CASE)
 
@@ -65,7 +65,7 @@ fun checkForAppUpdate(): UpdateCheckResult {
             if (!hasNewerVersion && !hasNewerBuild) continue
             val assets = release.optJSONArray("assets") ?: continue
             val apk = findApkAsset(assets)
-                ?: throw IOException("GitHub release $tag is missing its KiCompanion.apk file.")
+                ?: throw IOException("GitHub release $tag is missing its TotCompanion.apk file.")
             return UpdateCheckResult.Available(
                 AppUpdate(
                     versionName = version,

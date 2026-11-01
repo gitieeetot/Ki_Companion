@@ -66,7 +66,7 @@ The bridge is disabled by default, accepts only authenticated chat/status reques
 
 ### Publishing Android updates on GitHub
 
-The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.6` is pushed. It publishes the file as `KiCompanion.apk`; the in-app updater looks for this asset on Android releases.
+The `.github/workflows/android-release.yml` workflow builds and publishes a signed APK when a tag like `android-v0.1.6` is pushed. It publishes the Android app as `TotCompanion.apk`; the in-app updater looks for this asset on Android releases.
 
 Before the first release, create a long-lived Android signing key and back it up securely. Never commit the keystore or its passwords:
 

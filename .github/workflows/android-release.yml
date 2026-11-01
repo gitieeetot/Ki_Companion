@@ -31,7 +31,7 @@ jobs:
             exit 1
           fi
           IFS=. read -r major minor patch <<< "$version"
-          version_code=$((major * 1000000 + minor * 1000 + patch + 3))
+          version_code=$((major * 1000000 + minor * 1000 + patch + 4))
           echo "name=$version" >> "$GITHUB_OUTPUT"
           echo "code=$version_code" >> "$GITHUB_OUTPUT"
 
@@ -65,20 +65,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/KiCompanion.apk
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" \
-              android/app/build/outputs/apk/release/KiCompanion.apk \
-              --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" \
-              android/app/build/outputs/apk/release/KiCompanion.apk \
-              --title "Ki Companion ${{ steps.version.outputs.name }}" \
-              --notes "$release_notes"
-          fi
-          release_notes="$(gh release view "$GITHUB_REF_NAME" --json body --jq .body)"
+          cp android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/TotCompanion.apk
+          release_notes="$(gh release view "$GITHUB_REF_NAME" --json body --jq .body 2>/dev/null || true)"
           release_notes="$(printf '%s\n' "$release_notes" | sed '/^Ki-Companion-Version-Code:/d')"
           release_notes="${release_notes}"$'\n\n'"Ki-Companion-Version-Code: ${{ steps.version.outputs.code }}"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              android/app/build/outputs/apk/release/TotCompanion.apk \
+              --clobber
+            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fxq 'KiCompanion.apk'; then
+              gh release delete-asset "$GITHUB_REF_NAME" KiCompanion.apk --yes
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              android/app/build/outputs/apk/release/TotCompanion.apk \
+              --title "Tot Android Companion ${{ steps.version.outputs.name }}" \
+              --notes "$release_notes"
+          fi
           release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -f "name=Tot Android Companion ${{ steps.version.outputs.name }}" \
