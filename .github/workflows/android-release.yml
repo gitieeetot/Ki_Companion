@@ -86,4 +86,6 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -f "name=Tot Android Companion ${{ steps.version.outputs.name }}" \
             -f "body=$release_notes" \
+            -F draft=false \
+            -F prerelease=false \
             -f make_latest=true
