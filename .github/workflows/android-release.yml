@@ -31,7 +31,7 @@ jobs:
             exit 1
           fi
           IFS=. read -r major minor patch <<< "$version"
-          version_code=$((major * 1000000 + minor * 1000 + patch + 1))
+          version_code=$((major * 1000000 + minor * 1000 + patch + 2))
           echo "name=$version" >> "$GITHUB_OUTPUT"
           echo "code=$version_code" >> "$GITHUB_OUTPUT"
 
